@@ -137,13 +137,7 @@ fn print_u64(n: u64) void {
 }
 
 fn write_bytecode_file(path: string, buf: *ByteBuffer) void {
-    // Create a slice of the actual data
-    // Note: write_bytes expects a slice, not pointer
-    var i: u64 = 0
-    const out = @alloc([]u8, buf.len)
-    while (i < buf.len) {
-        out[i] = buf.data[i]
-        i = i + 1
-    }
-    write_bytes(path, out)
+    // Pass the buffer's data slice directly
+    // The write_bytes native function should handle slices
+    write_bytes(path, buf.data)
 }

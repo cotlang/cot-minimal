@@ -1,22 +1,21 @@
 // util.cot - Utility types and functions for Minimal Cot
 // Part of cot-minimal: Track B of bootstrap race
 //
-// Since we don't have generics, we use concrete list types.
-// Each list type is specialized for its element type.
+// Uses actual Cot syntax with List<T> for dynamic arrays.
 
 // ============================================================================
-// Result type for error handling (no exceptions in Minimal Cot)
+// ParseResult type for error handling
 // ============================================================================
 
-struct Result {
+struct ParseResult {
     ok: bool,
     error_msg: string,
     error_line: u64,
     error_col: u64,
 }
 
-fn result_ok() Result {
-    return Result{
+fn result_ok() ParseResult {
+    return ParseResult{
         .ok = true,
         .error_msg = "",
         .error_line = 0,
@@ -24,8 +23,8 @@ fn result_ok() Result {
     }
 }
 
-fn result_error(msg: string, line: u64, col: u64) Result {
-    return Result{
+fn result_error(msg: string, line: u64, col: u64) ParseResult {
+    return ParseResult{
         .ok = false,
         .error_msg = msg,
         .error_line = line,
@@ -34,63 +33,35 @@ fn result_error(msg: string, line: u64, col: u64) Result {
 }
 
 // ============================================================================
-// Token List
+// Source Location
 // ============================================================================
 
-struct TokenList {
-    items: []*Token,
-    len: u64,
-    cap: u64,
+struct SourceLoc {
+    line: u64,
+    column: u64,
 }
 
-fn tokenlist_new() TokenList {
-    return TokenList{
-        .items = @alloc([]*Token, 16),
-        .len = 0,
-        .cap = 16,
+fn sourceloc_new(line: u64, column: u64) SourceLoc {
+    return SourceLoc{
+        .line = line,
+        .column = column,
     }
-}
-
-fn tokenlist_push(list: *TokenList, tok: *Token) void {
-    if (list.len >= list.cap) {
-        const new_cap = list.cap * 2
-        const new_items = @alloc([]*Token, new_cap)
-        for (i in 0..list.len) {
-            new_items[i] = list.items[i]
-        }
-        list.items = new_items
-        list.cap = new_cap
-    }
-    list.items[list.len] = tok
-    list.len = list.len + 1
-}
-
-fn tokenlist_get(list: *TokenList, index: u64) *Token {
-    return list.items[index]
 }
 
 // ============================================================================
 // String helpers
 // ============================================================================
 
-fn str_eq(a: string, b: string) bool {
-    return a == b
-}
-
 fn str_len(s: string) u64 {
-    return @strlen(s)
+    return len(s)
 }
 
 fn str_char_at(s: string, index: u64) u8 {
-    return @char_at(s, index)
+    return s[index]
 }
 
 fn str_substring(s: string, start: u64, end: u64) string {
-    return @substring(s, start, end)
-}
-
-fn str_concat(a: string, b: string) string {
-    return a + b
+    return s[start..end]
 }
 
 // Check if character is a digit
@@ -125,13 +96,16 @@ fn digit_value(c: u8) u64 {
     return c - 48  // '0' = 48
 }
 
+fn is_hex_digit(c: u8) bool {
+    if (is_digit(c)) { return true }
+    if (c >= 65 and c <= 70) { return true }   // A-F
+    if (c >= 97 and c <= 102) { return true }  // a-f
+    return false
+}
+
 // ============================================================================
 // Integer helpers
 // ============================================================================
-
-fn int_to_string(n: i64) string {
-    return @int_to_string(n)
-}
 
 fn max_u64(a: u64, b: u64) u64 {
     if (a > b) { return a }
@@ -144,155 +118,51 @@ fn min_u64(a: u64, b: u64) u64 {
 }
 
 // ============================================================================
-// StringBuilder for efficient string building
-// ============================================================================
-
-struct StringBuilder {
-    buffer: []u8,
-    len: u64,
-    cap: u64,
-}
-
-fn stringbuilder_new() StringBuilder {
-    return StringBuilder{
-        .buffer = @alloc([]u8, 256),
-        .len = 0,
-        .cap = 256,
-    }
-}
-
-fn stringbuilder_append(sb: *StringBuilder, s: string) void {
-    const slen = str_len(s)
-    while (sb.len + slen > sb.cap) {
-        const new_cap = sb.cap * 2
-        const new_buf = @alloc([]u8, new_cap)
-        for (i in 0..sb.len) {
-            new_buf[i] = sb.buffer[i]
-        }
-        sb.buffer = new_buf
-        sb.cap = new_cap
-    }
-    for (i in 0..slen) {
-        sb.buffer[sb.len + i] = str_char_at(s, i)
-    }
-    sb.len = sb.len + slen
-}
-
-fn stringbuilder_append_char(sb: *StringBuilder, c: u8) void {
-    if (sb.len >= sb.cap) {
-        const new_cap = sb.cap * 2
-        const new_buf = @alloc([]u8, new_cap)
-        for (i in 0..sb.len) {
-            new_buf[i] = sb.buffer[i]
-        }
-        sb.buffer = new_buf
-        sb.cap = new_cap
-    }
-    sb.buffer[sb.len] = c
-    sb.len = sb.len + 1
-}
-
-fn stringbuilder_to_string(sb: *StringBuilder) string {
-    return @bytes_to_string(sb.buffer, sb.len)
-}
-
-// ============================================================================
 // Byte buffer for bytecode output
 // ============================================================================
 
 struct ByteBuffer {
-    data: []u8,
-    len: u64,
-    cap: u64,
+    data: List<u8>,
 }
 
-fn bytebuffer_new() ByteBuffer {
-    return ByteBuffer{
-        .data = @alloc([]u8, 1024),
-        .len = 0,
-        .cap = 1024,
+fn bytebuffer_new() *ByteBuffer {
+    var bb = new ByteBuffer{
+        .data = new List<u8>,
+    }
+    return bb
+}
+
+fn bytebuffer_len(bb: *ByteBuffer) u64 {
+    return bb.data.len()
+}
+
+fn bytebuffer_write_byte(bb: *ByteBuffer, value: u8) {
+    bb.data.push(value)
+}
+
+fn bytebuffer_write_u16(bb: *ByteBuffer, value: u16) {
+    // Little endian
+    bb.data.push((value & 0xFF) as u8)
+    bb.data.push(((value >> 8) & 0xFF) as u8)
+}
+
+fn bytebuffer_write_u32(bb: *ByteBuffer, value: u32) {
+    // Little endian
+    bb.data.push((value & 0xFF) as u8)
+    bb.data.push(((value >> 8) & 0xFF) as u8)
+    bb.data.push(((value >> 16) & 0xFF) as u8)
+    bb.data.push(((value >> 24) & 0xFF) as u8)
+}
+
+fn bytebuffer_write_i64(bb: *ByteBuffer, value: i64) {
+    // Little endian
+    var v = value as u64
+    for i in 0..8 {
+        bb.data.push((v & 0xFF) as u8)
+        v = v >> 8
     }
 }
 
-fn bytebuffer_ensure_capacity(bb: *ByteBuffer, needed: u64) void {
-    while (bb.len + needed > bb.cap) {
-        const new_cap = bb.cap * 2
-        const new_data = @alloc([]u8, new_cap)
-        for (i in 0..bb.len) {
-            new_data[i] = bb.data[i]
-        }
-        bb.data = new_data
-        bb.cap = new_cap
-    }
-}
-
-fn bytebuffer_write_u8(bb: *ByteBuffer, value: u8) void {
-    bytebuffer_ensure_capacity(bb, 1)
-    bb.data[bb.len] = value
-    bb.len = bb.len + 1
-}
-
-fn bytebuffer_write_u16(bb: *ByteBuffer, value: u16) void {
-    bytebuffer_ensure_capacity(bb, 2)
-    bb.data[bb.len] = (value and 255)
-    bb.data[bb.len + 1] = ((value / 256) and 255)
-    bb.len = bb.len + 2
-}
-
-fn bytebuffer_write_u32(bb: *ByteBuffer, value: u32) void {
-    bytebuffer_ensure_capacity(bb, 4)
-    bb.data[bb.len] = (value and 255)
-    bb.data[bb.len + 1] = ((value / 256) and 255)
-    bb.data[bb.len + 2] = ((value / 65536) and 255)
-    bb.data[bb.len + 3] = ((value / 16777216) and 255)
-    bb.len = bb.len + 4
-}
-
-fn bytebuffer_write_u64(bb: *ByteBuffer, value: u64) void {
-    bytebuffer_ensure_capacity(bb, 8)
-    bb.data[bb.len] = (value and 255)
-    bb.data[bb.len + 1] = ((value / 256) and 255)
-    bb.data[bb.len + 2] = ((value / 65536) and 255)
-    bb.data[bb.len + 3] = ((value / 16777216) and 255)
-    bb.data[bb.len + 4] = ((value / 4294967296) and 255)
-    bb.data[bb.len + 5] = ((value / 1099511627776) and 255)
-    bb.data[bb.len + 6] = ((value / 281474976710656) and 255)
-    bb.data[bb.len + 7] = ((value / 72057594037927936) and 255)
-    bb.len = bb.len + 8
-}
-
-fn bytebuffer_write_string(bb: *ByteBuffer, s: string) void {
-    const slen = str_len(s)
-    bytebuffer_write_u32(bb, slen)
-    bytebuffer_ensure_capacity(bb, slen)
-    for (i in 0..slen) {
-        bb.data[bb.len + i] = str_char_at(s, i)
-    }
-    bb.len = bb.len + slen
-}
-
-// Alias for bytebuffer_write_u8
-fn bytebuffer_write_byte(bb: *ByteBuffer, value: u8) void {
-    bytebuffer_write_u8(bb, value)
-}
-
-// Get bytebuffer as slice
-fn bytebuffer_to_slice(bb: *ByteBuffer) []u8 {
-    return bb.data
-}
-
-// ============================================================================
-// Source Location
-// ============================================================================
-
-struct SourceLoc {
-    line: u64,
-    column: u64,
-}
-
-fn sourceloc_new(line: u64, column: u64) SourceLoc {
-    return SourceLoc{
-        .line = line,
-        .column = column,
-    }
+fn bytebuffer_get_pos(bb: *ByteBuffer) u32 {
+    return bb.data.len() as u32
 }

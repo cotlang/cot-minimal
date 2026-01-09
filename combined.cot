@@ -1,0 +1,4826 @@
+// util.cot - Utility types and functions for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Since we don't have generics, we use concrete list types.
+// Each list type is specialized for its element type.
+
+// ============================================================================
+// Result type for error handling (no exceptions in Minimal Cot)
+// ============================================================================
+
+struct Result {
+    ok: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+fn result_ok() Result {
+    return Result{
+        .ok = true,
+        .error_msg = "",
+        .error_line = 0,
+        .error_col = 0,
+    }
+}
+
+fn result_error(msg: string, line: u64, col: u64) Result {
+    return Result{
+        .ok = false,
+        .error_msg = msg,
+        .error_line = line,
+        .error_col = col,
+    }
+}
+
+// ============================================================================
+// Token List
+// ============================================================================
+
+struct TokenList {
+    items: []*Token,
+    len: u64,
+    cap: u64,
+}
+
+fn tokenlist_new() TokenList {
+    return TokenList{
+        .items = @alloc([]*Token, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn tokenlist_push(list: *TokenList, tok: *Token) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Token, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = tok
+    list.len = list.len + 1
+}
+
+fn tokenlist_get(list: *TokenList, index: u64) *Token {
+    return list.items[index]
+}
+
+// ============================================================================
+// String helpers
+// ============================================================================
+
+fn str_eq(a: string, b: string) bool {
+    return a == b
+}
+
+fn str_len(s: string) u64 {
+    return @strlen(s)
+}
+
+fn str_char_at(s: string, index: u64) u8 {
+    return @char_at(s, index)
+}
+
+fn str_substring(s: string, start: u64, end: u64) string {
+    return @substring(s, start, end)
+}
+
+fn str_concat(a: string, b: string) string {
+    return a + b
+}
+
+// Check if character is a digit
+fn is_digit(c: u8) bool {
+    return c >= 48 and c <= 57  // '0' = 48, '9' = 57
+}
+
+// Check if character is alphabetic
+fn is_alpha(c: u8) bool {
+    if (c >= 65 and c <= 90) { return true }   // A-Z
+    if (c >= 97 and c <= 122) { return true }  // a-z
+    if (c == 95) { return true }               // _
+    return false
+}
+
+// Check if character is alphanumeric
+fn is_alnum(c: u8) bool {
+    return is_alpha(c) or is_digit(c)
+}
+
+// Check if character is whitespace
+fn is_whitespace(c: u8) bool {
+    if (c == 32) { return true }   // space
+    if (c == 9) { return true }    // tab
+    if (c == 10) { return true }   // newline
+    if (c == 13) { return true }   // carriage return
+    return false
+}
+
+// Convert digit character to integer
+fn digit_value(c: u8) u64 {
+    return c - 48  // '0' = 48
+}
+
+// ============================================================================
+// Integer helpers
+// ============================================================================
+
+fn int_to_string(n: i64) string {
+    return @int_to_string(n)
+}
+
+fn max_u64(a: u64, b: u64) u64 {
+    if (a > b) { return a }
+    return b
+}
+
+fn min_u64(a: u64, b: u64) u64 {
+    if (a < b) { return a }
+    return b
+}
+
+// ============================================================================
+// StringBuilder for efficient string building
+// ============================================================================
+
+struct StringBuilder {
+    buffer: []u8,
+    len: u64,
+    cap: u64,
+}
+
+fn stringbuilder_new() StringBuilder {
+    return StringBuilder{
+        .buffer = @alloc([]u8, 256),
+        .len = 0,
+        .cap = 256,
+    }
+}
+
+fn stringbuilder_append(sb: *StringBuilder, s: string) void {
+    const slen = str_len(s)
+    while (sb.len + slen > sb.cap) {
+        const new_cap = sb.cap * 2
+        const new_buf = @alloc([]u8, new_cap)
+        for (i in 0..sb.len) {
+            new_buf[i] = sb.buffer[i]
+        }
+        sb.buffer = new_buf
+        sb.cap = new_cap
+    }
+    for (i in 0..slen) {
+        sb.buffer[sb.len + i] = str_char_at(s, i)
+    }
+    sb.len = sb.len + slen
+}
+
+fn stringbuilder_append_char(sb: *StringBuilder, c: u8) void {
+    if (sb.len >= sb.cap) {
+        const new_cap = sb.cap * 2
+        const new_buf = @alloc([]u8, new_cap)
+        for (i in 0..sb.len) {
+            new_buf[i] = sb.buffer[i]
+        }
+        sb.buffer = new_buf
+        sb.cap = new_cap
+    }
+    sb.buffer[sb.len] = c
+    sb.len = sb.len + 1
+}
+
+fn stringbuilder_to_string(sb: *StringBuilder) string {
+    return @bytes_to_string(sb.buffer, sb.len)
+}
+
+// ============================================================================
+// Byte buffer for bytecode output
+// ============================================================================
+
+struct ByteBuffer {
+    data: []u8,
+    len: u64,
+    cap: u64,
+}
+
+fn bytebuffer_new() ByteBuffer {
+    return ByteBuffer{
+        .data = @alloc([]u8, 1024),
+        .len = 0,
+        .cap = 1024,
+    }
+}
+
+fn bytebuffer_ensure_capacity(bb: *ByteBuffer, needed: u64) void {
+    while (bb.len + needed > bb.cap) {
+        const new_cap = bb.cap * 2
+        const new_data = @alloc([]u8, new_cap)
+        for (i in 0..bb.len) {
+            new_data[i] = bb.data[i]
+        }
+        bb.data = new_data
+        bb.cap = new_cap
+    }
+}
+
+fn bytebuffer_write_u8(bb: *ByteBuffer, value: u8) void {
+    bytebuffer_ensure_capacity(bb, 1)
+    bb.data[bb.len] = value
+    bb.len = bb.len + 1
+}
+
+fn bytebuffer_write_u16(bb: *ByteBuffer, value: u16) void {
+    bytebuffer_ensure_capacity(bb, 2)
+    bb.data[bb.len] = (value and 255)
+    bb.data[bb.len + 1] = ((value / 256) and 255)
+    bb.len = bb.len + 2
+}
+
+fn bytebuffer_write_u32(bb: *ByteBuffer, value: u32) void {
+    bytebuffer_ensure_capacity(bb, 4)
+    bb.data[bb.len] = (value and 255)
+    bb.data[bb.len + 1] = ((value / 256) and 255)
+    bb.data[bb.len + 2] = ((value / 65536) and 255)
+    bb.data[bb.len + 3] = ((value / 16777216) and 255)
+    bb.len = bb.len + 4
+}
+
+fn bytebuffer_write_u64(bb: *ByteBuffer, value: u64) void {
+    bytebuffer_ensure_capacity(bb, 8)
+    bb.data[bb.len] = (value and 255)
+    bb.data[bb.len + 1] = ((value / 256) and 255)
+    bb.data[bb.len + 2] = ((value / 65536) and 255)
+    bb.data[bb.len + 3] = ((value / 16777216) and 255)
+    bb.data[bb.len + 4] = ((value / 4294967296) and 255)
+    bb.data[bb.len + 5] = ((value / 1099511627776) and 255)
+    bb.data[bb.len + 6] = ((value / 281474976710656) and 255)
+    bb.data[bb.len + 7] = ((value / 72057594037927936) and 255)
+    bb.len = bb.len + 8
+}
+
+fn bytebuffer_write_string(bb: *ByteBuffer, s: string) void {
+    const slen = str_len(s)
+    bytebuffer_write_u32(bb, slen)
+    bytebuffer_ensure_capacity(bb, slen)
+    for (i in 0..slen) {
+        bb.data[bb.len + i] = str_char_at(s, i)
+    }
+    bb.len = bb.len + slen
+}
+
+// Alias for bytebuffer_write_u8
+fn bytebuffer_write_byte(bb: *ByteBuffer, value: u8) void {
+    bytebuffer_write_u8(bb, value)
+}
+
+// Get bytebuffer as slice
+fn bytebuffer_to_slice(bb: *ByteBuffer) []u8 {
+    return bb.data
+}
+
+// ============================================================================
+// Source Location
+// ============================================================================
+
+struct SourceLoc {
+    line: u64,
+    column: u64,
+}
+
+fn sourceloc_new(line: u64, column: u64) SourceLoc {
+    return SourceLoc{
+        .line = line,
+        .column = column,
+    }
+}
+// token.cot - Token types for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+
+// Token types - simple enum (no associated data in Minimal Cot)
+enum TokenType {
+    // Literals
+    Integer,
+    String,
+    Identifier,
+
+    // Keywords
+    KwFn,
+    KwVar,
+    KwConst,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwFor,
+    KwIn,
+    KwReturn,
+    KwBreak,
+    KwContinue,
+    KwStruct,
+    KwEnum,
+    KwAnd,
+    KwOr,
+    KwNot,
+    KwTrue,
+    KwFalse,
+    KwNull,
+
+    // Operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Ampersand,
+    Equal,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Dot,
+    DotStar,
+    DotDot,
+
+    // Delimiters
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Comma,
+    Colon,
+    Semicolon,
+    Arrow,
+
+    // Special
+    Eof,
+    Error,
+}
+
+// Token structure - holds type and position
+struct Token {
+    type: TokenType,
+    start: u64,
+    length: u64,
+    line: u64,
+    column: u64,
+}
+
+// Source location for error reporting
+struct SourceLoc {
+    line: u64,
+    column: u64,
+    offset: u64,
+}
+
+// Create a new token
+fn token_new(type: TokenType, start: u64, length: u64, line: u64, column: u64) Token {
+    return Token{
+        .type = type,
+        .start = start,
+        .length = length,
+        .line = line,
+        .column = column,
+    }
+}
+
+// Check if token type is a keyword
+fn is_keyword(type: TokenType) bool {
+    if (type == TokenType.KwFn) { return true }
+    if (type == TokenType.KwVar) { return true }
+    if (type == TokenType.KwConst) { return true }
+    if (type == TokenType.KwIf) { return true }
+    if (type == TokenType.KwElse) { return true }
+    if (type == TokenType.KwWhile) { return true }
+    if (type == TokenType.KwFor) { return true }
+    if (type == TokenType.KwIn) { return true }
+    if (type == TokenType.KwReturn) { return true }
+    if (type == TokenType.KwBreak) { return true }
+    if (type == TokenType.KwContinue) { return true }
+    if (type == TokenType.KwStruct) { return true }
+    if (type == TokenType.KwEnum) { return true }
+    if (type == TokenType.KwAnd) { return true }
+    if (type == TokenType.KwOr) { return true }
+    if (type == TokenType.KwNot) { return true }
+    if (type == TokenType.KwTrue) { return true }
+    if (type == TokenType.KwFalse) { return true }
+    if (type == TokenType.KwNull) { return true }
+    return false
+}
+
+// Get keyword from identifier string, or null if not a keyword
+// Returns the token type, caller checks if it changed from Identifier
+fn keyword_lookup(text: string) TokenType {
+    if (text == "fn") { return TokenType.KwFn }
+    if (text == "var") { return TokenType.KwVar }
+    if (text == "const") { return TokenType.KwConst }
+    if (text == "if") { return TokenType.KwIf }
+    if (text == "else") { return TokenType.KwElse }
+    if (text == "while") { return TokenType.KwWhile }
+    if (text == "for") { return TokenType.KwFor }
+    if (text == "in") { return TokenType.KwIn }
+    if (text == "return") { return TokenType.KwReturn }
+    if (text == "break") { return TokenType.KwBreak }
+    if (text == "continue") { return TokenType.KwContinue }
+    if (text == "struct") { return TokenType.KwStruct }
+    if (text == "enum") { return TokenType.KwEnum }
+    if (text == "and") { return TokenType.KwAnd }
+    if (text == "or") { return TokenType.KwOr }
+    if (text == "not") { return TokenType.KwNot }
+    if (text == "true") { return TokenType.KwTrue }
+    if (text == "false") { return TokenType.KwFalse }
+    if (text == "null") { return TokenType.KwNull }
+    return TokenType.Identifier
+}
+
+// Get string representation of token type (for debugging)
+fn token_type_name(type: TokenType) string {
+    if (type == TokenType.Integer) { return "Integer" }
+    if (type == TokenType.String) { return "String" }
+    if (type == TokenType.Identifier) { return "Identifier" }
+    if (type == TokenType.KwFn) { return "fn" }
+    if (type == TokenType.KwVar) { return "var" }
+    if (type == TokenType.KwConst) { return "const" }
+    if (type == TokenType.KwIf) { return "if" }
+    if (type == TokenType.KwElse) { return "else" }
+    if (type == TokenType.KwWhile) { return "while" }
+    if (type == TokenType.KwFor) { return "for" }
+    if (type == TokenType.KwIn) { return "in" }
+    if (type == TokenType.KwReturn) { return "return" }
+    if (type == TokenType.KwBreak) { return "break" }
+    if (type == TokenType.KwContinue) { return "continue" }
+    if (type == TokenType.KwStruct) { return "struct" }
+    if (type == TokenType.KwEnum) { return "enum" }
+    if (type == TokenType.KwAnd) { return "and" }
+    if (type == TokenType.KwOr) { return "or" }
+    if (type == TokenType.KwNot) { return "not" }
+    if (type == TokenType.KwTrue) { return "true" }
+    if (type == TokenType.KwFalse) { return "false" }
+    if (type == TokenType.KwNull) { return "null" }
+    if (type == TokenType.Plus) { return "+" }
+    if (type == TokenType.Minus) { return "-" }
+    if (type == TokenType.Star) { return "*" }
+    if (type == TokenType.Slash) { return "/" }
+    if (type == TokenType.Percent) { return "%" }
+    if (type == TokenType.Ampersand) { return "&" }
+    if (type == TokenType.Equal) { return "=" }
+    if (type == TokenType.EqualEqual) { return "==" }
+    if (type == TokenType.BangEqual) { return "!=" }
+    if (type == TokenType.Less) { return "<" }
+    if (type == TokenType.LessEqual) { return "<=" }
+    if (type == TokenType.Greater) { return ">" }
+    if (type == TokenType.GreaterEqual) { return ">=" }
+    if (type == TokenType.Dot) { return "." }
+    if (type == TokenType.DotStar) { return ".*" }
+    if (type == TokenType.DotDot) { return ".." }
+    if (type == TokenType.LParen) { return "(" }
+    if (type == TokenType.RParen) { return ")" }
+    if (type == TokenType.LBrace) { return "{" }
+    if (type == TokenType.RBrace) { return "}" }
+    if (type == TokenType.LBracket) { return "[" }
+    if (type == TokenType.RBracket) { return "]" }
+    if (type == TokenType.Comma) { return "," }
+    if (type == TokenType.Colon) { return ":" }
+    if (type == TokenType.Semicolon) { return ";" }
+    if (type == TokenType.Arrow) { return "->" }
+    if (type == TokenType.Eof) { return "EOF" }
+    if (type == TokenType.Error) { return "Error" }
+    return "Unknown"
+}
+// lexer.cot - Tokenizer for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+
+// Lexer state
+struct Lexer {
+    source: string,
+    start: u64,
+    current: u64,
+    line: u64,
+    column: u64,
+    start_column: u64,
+}
+
+// Lexer result with token or error
+struct LexResult {
+    token: Token,
+    ok: bool,
+    error_msg: string,
+}
+
+fn lex_result_ok(tok: Token) LexResult {
+    return LexResult{
+        .token = tok,
+        .ok = true,
+        .error_msg = "",
+    }
+}
+
+fn lex_result_error(msg: string, line: u64, col: u64) LexResult {
+    return LexResult{
+        .token = token_new(TokenType.Error, 0, 0, line, col),
+        .ok = false,
+        .error_msg = msg,
+    }
+}
+
+// Create a new lexer
+fn lexer_new(source: string) Lexer {
+    return Lexer{
+        .source = source,
+        .start = 0,
+        .current = 0,
+        .line = 1,
+        .column = 1,
+        .start_column = 1,
+    }
+}
+
+// Check if at end of source
+fn lexer_is_at_end(lex: *Lexer) bool {
+    return lex.current >= str_len(lex.source)
+}
+
+// Peek current character without advancing
+fn lexer_peek(lex: *Lexer) u8 {
+    if (lexer_is_at_end(lex)) {
+        return 0
+    }
+    return str_char_at(lex.source, lex.current)
+}
+
+// Peek next character
+fn lexer_peek_next(lex: *Lexer) u8 {
+    if (lex.current + 1 >= str_len(lex.source)) {
+        return 0
+    }
+    return str_char_at(lex.source, lex.current + 1)
+}
+
+// Advance and return current character
+fn lexer_advance(lex: *Lexer) u8 {
+    const c = str_char_at(lex.source, lex.current)
+    lex.current = lex.current + 1
+    lex.column = lex.column + 1
+    return c
+}
+
+// Match expected character and advance if matches
+fn lexer_match(lex: *Lexer, expected: u8) bool {
+    if (lexer_is_at_end(lex)) {
+        return false
+    }
+    if (str_char_at(lex.source, lex.current) != expected) {
+        return false
+    }
+    lex.current = lex.current + 1
+    lex.column = lex.column + 1
+    return true
+}
+
+// Make a token with current span
+fn lexer_make_token(lex: *Lexer, type: TokenType) Token {
+    return token_new(
+        type,
+        lex.start,
+        lex.current - lex.start,
+        lex.line,
+        lex.start_column
+    )
+}
+
+// Skip whitespace and comments
+fn lexer_skip_whitespace(lex: *Lexer) void {
+    while (not lexer_is_at_end(lex)) {
+        const c = lexer_peek(lex)
+
+        if (c == 32 or c == 9 or c == 13) {
+            // Space, tab, or carriage return
+            lexer_advance(lex)
+        } else if (c == 10) {
+            // Newline
+            lex.line = lex.line + 1
+            lex.column = 0
+            lexer_advance(lex)
+        } else if (c == 47 and lexer_peek_next(lex) == 47) {
+            // Line comment: //
+            while (not lexer_is_at_end(lex) and lexer_peek(lex) != 10) {
+                lexer_advance(lex)
+            }
+        } else if (c == 47 and lexer_peek_next(lex) == 42) {
+            // Block comment: /* */
+            lexer_advance(lex)  // skip /
+            lexer_advance(lex)  // skip *
+            while (not lexer_is_at_end(lex)) {
+                if (lexer_peek(lex) == 42 and lexer_peek_next(lex) == 47) {
+                    lexer_advance(lex)  // skip *
+                    lexer_advance(lex)  // skip /
+                    break
+                }
+                if (lexer_peek(lex) == 10) {
+                    lex.line = lex.line + 1
+                    lex.column = 0
+                }
+                lexer_advance(lex)
+            }
+        } else {
+            return
+        }
+    }
+}
+
+// Scan a string literal
+fn lexer_string(lex: *Lexer) LexResult {
+    while (not lexer_is_at_end(lex) and lexer_peek(lex) != 34) {
+        if (lexer_peek(lex) == 10) {
+            lex.line = lex.line + 1
+            lex.column = 0
+        }
+        if (lexer_peek(lex) == 92) {
+            // Escape sequence - skip next char too
+            lexer_advance(lex)
+        }
+        lexer_advance(lex)
+    }
+
+    if (lexer_is_at_end(lex)) {
+        return lex_result_error("Unterminated string", lex.line, lex.start_column)
+    }
+
+    // Closing quote
+    lexer_advance(lex)
+    return lex_result_ok(lexer_make_token(lex, TokenType.String))
+}
+
+// Scan a number literal
+fn lexer_number(lex: *Lexer) LexResult {
+    while (is_digit(lexer_peek(lex))) {
+        lexer_advance(lex)
+    }
+
+    // Check for hex: 0x...
+    if (lex.current - lex.start == 1) {
+        const first = str_char_at(lex.source, lex.start)
+        if (first == 48 and (lexer_peek(lex) == 120 or lexer_peek(lex) == 88)) {
+            // 0x or 0X
+            lexer_advance(lex)  // skip x
+            while (is_hex_digit(lexer_peek(lex))) {
+                lexer_advance(lex)
+            }
+        }
+    }
+
+    return lex_result_ok(lexer_make_token(lex, TokenType.Integer))
+}
+
+fn is_hex_digit(c: u8) bool {
+    if (is_digit(c)) { return true }
+    if (c >= 65 and c <= 70) { return true }   // A-F
+    if (c >= 97 and c <= 102) { return true }  // a-f
+    return false
+}
+
+// Scan an identifier or keyword
+fn lexer_identifier(lex: *Lexer) LexResult {
+    while (is_alnum(lexer_peek(lex))) {
+        lexer_advance(lex)
+    }
+
+    // Get the text and check if it's a keyword
+    const text = str_substring(lex.source, lex.start, lex.current)
+    const type = keyword_lookup(text)
+
+    return lex_result_ok(lexer_make_token(lex, type))
+}
+
+// Scan the next token
+fn lexer_scan_token(lex: *Lexer) LexResult {
+    lexer_skip_whitespace(lex)
+
+    lex.start = lex.current
+    lex.start_column = lex.column
+
+    if (lexer_is_at_end(lex)) {
+        return lex_result_ok(lexer_make_token(lex, TokenType.Eof))
+    }
+
+    const c = lexer_advance(lex)
+
+    // Identifiers and keywords
+    if (is_alpha(c)) {
+        return lexer_identifier(lex)
+    }
+
+    // Numbers
+    if (is_digit(c)) {
+        return lexer_number(lex)
+    }
+
+    // Single-character tokens and multi-character operators
+    if (c == 40) { return lex_result_ok(lexer_make_token(lex, TokenType.LParen)) }
+    if (c == 41) { return lex_result_ok(lexer_make_token(lex, TokenType.RParen)) }
+    if (c == 123) { return lex_result_ok(lexer_make_token(lex, TokenType.LBrace)) }
+    if (c == 125) { return lex_result_ok(lexer_make_token(lex, TokenType.RBrace)) }
+    if (c == 91) { return lex_result_ok(lexer_make_token(lex, TokenType.LBracket)) }
+    if (c == 93) { return lex_result_ok(lexer_make_token(lex, TokenType.RBracket)) }
+    if (c == 44) { return lex_result_ok(lexer_make_token(lex, TokenType.Comma)) }
+    if (c == 58) { return lex_result_ok(lexer_make_token(lex, TokenType.Colon)) }
+    if (c == 59) { return lex_result_ok(lexer_make_token(lex, TokenType.Semicolon)) }
+    if (c == 43) { return lex_result_ok(lexer_make_token(lex, TokenType.Plus)) }
+    if (c == 42) { return lex_result_ok(lexer_make_token(lex, TokenType.Star)) }
+    if (c == 47) { return lex_result_ok(lexer_make_token(lex, TokenType.Slash)) }
+    if (c == 37) { return lex_result_ok(lexer_make_token(lex, TokenType.Percent)) }
+    if (c == 38) { return lex_result_ok(lexer_make_token(lex, TokenType.Ampersand)) }
+
+    // String literal
+    if (c == 34) {
+        return lexer_string(lex)
+    }
+
+    // Dot, .*, ..
+    if (c == 46) {
+        if (lexer_match(lex, 42)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.DotStar))
+        }
+        if (lexer_match(lex, 46)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.DotDot))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Dot))
+    }
+
+    // Minus, ->
+    if (c == 45) {
+        if (lexer_match(lex, 62)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.Arrow))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Minus))
+    }
+
+    // Equal, ==
+    if (c == 61) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.EqualEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Equal))
+    }
+
+    // Bang, !=
+    if (c == 33) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.BangEqual))
+        }
+        return lex_result_error("Unexpected character '!'", lex.line, lex.start_column)
+    }
+
+    // Less, <=
+    if (c == 60) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.LessEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Less))
+    }
+
+    // Greater, >=
+    if (c == 62) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.GreaterEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Greater))
+    }
+
+    return lex_result_error("Unexpected character", lex.line, lex.start_column)
+}
+
+// Tokenize entire source into list of tokens
+struct TokenizeResult {
+    tokens: TokenList,
+    ok: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+fn tokenize(source: string) TokenizeResult {
+    var lex = lexer_new(source)
+    var tokens = tokenlist_new()
+
+    while (true) {
+        const result = lexer_scan_token(&lex)
+
+        if (not result.ok) {
+            return TokenizeResult{
+                .tokens = tokens,
+                .ok = false,
+                .error_msg = result.error_msg,
+                .error_line = result.token.line,
+                .error_col = result.token.column,
+            }
+        }
+
+        // Allocate token on heap and add to list
+        const tok = @alloc(Token, 1)
+        tok.* = result.token
+        tokenlist_push(&tokens, tok)
+
+        if (result.token.type == TokenType.Eof) {
+            break
+        }
+    }
+
+    return TokenizeResult{
+        .tokens = tokens,
+        .ok = true,
+        .error_msg = "",
+        .error_line = 0,
+        .error_col = 0,
+    }
+}
+
+// Get the text of a token from source
+fn token_text(source: string, tok: *Token) string {
+    return str_substring(source, tok.start, tok.start + tok.length)
+}
+// ast.cot - AST node types for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Since Minimal Cot doesn't have tagged unions with data,
+// we use structs with tag enums and pointer fields.
+
+// ============================================================================
+// Expression Tags
+// ============================================================================
+
+enum ExprTag {
+    Integer,
+    String,
+    Bool,
+    Null,
+    Identifier,
+    Binary,
+    Unary,
+    Call,
+    Index,
+    Field,
+    Deref,
+    AddressOf,
+    StructInit,
+    ArrayInit,
+}
+
+// ============================================================================
+// Statement Tags
+// ============================================================================
+
+enum StmtTag {
+    VarDecl,
+    ConstDecl,
+    Assignment,
+    If,
+    While,
+    For,
+    ForRange,
+    Return,
+    Break,
+    Continue,
+    Block,
+    ExprStmt,
+    FnDecl,
+    StructDecl,
+    EnumDecl,
+}
+
+// ============================================================================
+// Type Tags
+// ============================================================================
+
+enum TypeTag {
+    Named,      // i64, bool, string, CustomType
+    Pointer,    // *T
+    Array,      // [N]T
+    Slice,      // []T
+    Function,   // fn(args) ReturnType
+}
+
+// ============================================================================
+// Type Node
+// ============================================================================
+
+struct TypeNode {
+    tag: TypeTag,
+    name: string,           // For Named types
+    inner: *TypeNode,       // For Pointer, Array, Slice (element type)
+    array_size: u64,        // For Array (0 = slice)
+    params: *TypeNodeList,  // For Function (parameter types)
+    return_type: *TypeNode, // For Function
+    loc: SourceLoc,
+}
+
+struct TypeNodeList {
+    items: []*TypeNode,
+    len: u64,
+    cap: u64,
+}
+
+fn typenodelist_new() TypeNodeList {
+    return TypeNodeList{
+        .items = @alloc([]*TypeNode, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn typenodelist_push(list: *TypeNodeList, node: *TypeNode) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*TypeNode, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = node
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// Expression Node
+// ============================================================================
+
+struct Expr {
+    tag: ExprTag,
+    loc: SourceLoc,
+
+    // Integer literal
+    int_value: i64,
+
+    // String literal
+    str_value: string,
+
+    // Bool literal
+    bool_value: bool,
+
+    // Identifier
+    ident_name: string,
+
+    // Binary expression
+    binary_op: TokenType,
+    binary_left: *Expr,
+    binary_right: *Expr,
+
+    // Unary expression
+    unary_op: TokenType,
+    unary_operand: *Expr,
+
+    // Call expression
+    call_callee: *Expr,
+    call_args: *ExprList,
+
+    // Index expression (arr[i])
+    index_base: *Expr,
+    index_index: *Expr,
+
+    // Field access (obj.field)
+    field_base: *Expr,
+    field_name: string,
+
+    // Deref (ptr.*)
+    deref_operand: *Expr,
+
+    // AddressOf (&value)
+    addressof_operand: *Expr,
+
+    // Struct initialization
+    struct_type_name: string,
+    struct_fields: *FieldInitList,
+
+    // Array initialization
+    array_elements: *ExprList,
+}
+
+struct ExprList {
+    items: []*Expr,
+    len: u64,
+    cap: u64,
+}
+
+fn exprlist_new() ExprList {
+    return ExprList{
+        .items = @alloc([]*Expr, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn exprlist_push(list: *ExprList, expr: *Expr) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Expr, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = expr
+    list.len = list.len + 1
+}
+
+// Field initializer for struct init: .field = value
+struct FieldInit {
+    name: string,
+    value: *Expr,
+}
+
+struct FieldInitList {
+    items: []*FieldInit,
+    len: u64,
+    cap: u64,
+}
+
+fn fieldinitlist_new() FieldInitList {
+    return FieldInitList{
+        .items = @alloc([]*FieldInit, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn fieldinitlist_push(list: *FieldInitList, init: *FieldInit) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*FieldInit, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = init
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// Statement Node
+// ============================================================================
+
+struct Stmt {
+    tag: StmtTag,
+    loc: SourceLoc,
+
+    // VarDecl / ConstDecl
+    decl_name: string,
+    decl_type: *TypeNode,       // null if inferred
+    decl_init: *Expr,           // null if no initializer
+
+    // Assignment
+    assign_target: *Expr,
+    assign_value: *Expr,
+
+    // If statement
+    if_condition: *Expr,
+    if_then: *Stmt,             // Block
+    if_else: *Stmt,             // null or Block or another If
+
+    // While statement
+    while_condition: *Expr,
+    while_body: *Stmt,          // Block
+
+    // For-in statement (for item in collection)
+    for_var_name: string,
+    for_iterable: *Expr,
+    for_body: *Stmt,            // Block
+
+    // For-range statement (for i in 0..n)
+    forrange_var_name: string,
+    forrange_start: *Expr,
+    forrange_end: *Expr,
+    forrange_body: *Stmt,       // Block
+
+    // Return statement
+    return_value: *Expr,        // null for void return
+
+    // Block (list of statements)
+    block_stmts: *StmtList,
+
+    // ExprStmt (expression as statement)
+    expr_stmt: *Expr,
+
+    // FnDecl
+    fn_name: string,
+    fn_params: *ParamList,
+    fn_return_type: *TypeNode,
+    fn_body: *Stmt,             // Block
+
+    // StructDecl
+    struct_name: string,
+    struct_fields: *StructFieldList,
+
+    // EnumDecl
+    enum_name: string,
+    enum_variants: *StringList,
+}
+
+struct StmtList {
+    items: []*Stmt,
+    len: u64,
+    cap: u64,
+}
+
+fn stmtlist_new() StmtList {
+    return StmtList{
+        .items = @alloc([]*Stmt, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn stmtlist_push(list: *StmtList, stmt: *Stmt) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Stmt, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = stmt
+    list.len = list.len + 1
+}
+
+// Function parameter
+struct Param {
+    name: string,
+    type: *TypeNode,
+}
+
+struct ParamList {
+    items: []*Param,
+    len: u64,
+    cap: u64,
+}
+
+fn paramlist_new() ParamList {
+    return ParamList{
+        .items = @alloc([]*Param, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn paramlist_push(list: *ParamList, param: *Param) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Param, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = param
+    list.len = list.len + 1
+}
+
+// Struct field declaration
+struct StructField {
+    name: string,
+    type: *TypeNode,
+}
+
+struct StructFieldList {
+    items: []*StructField,
+    len: u64,
+    cap: u64,
+}
+
+fn structfieldlist_new() StructFieldList {
+    return StructFieldList{
+        .items = @alloc([]*StructField, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn structfieldlist_push(list: *StructFieldList, field: *StructField) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*StructField, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = field
+    list.len = list.len + 1
+}
+
+// String list for enum variants
+struct StringList {
+    items: []string,
+    len: u64,
+    cap: u64,
+}
+
+fn stringlist_new() StringList {
+    return StringList{
+        .items = @alloc([]string, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn stringlist_push(list: *StringList, s: string) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]string, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = s
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// AST (Program) - top level
+// ============================================================================
+
+struct AST {
+    statements: *StmtList,
+}
+
+fn ast_new() AST {
+    const stmts = @alloc(StmtList, 1)
+    stmts.* = stmtlist_new()
+    return AST{
+        .statements = stmts,
+    }
+}
+
+// ============================================================================
+// AST Node Constructors
+// ============================================================================
+
+fn make_expr(tag: ExprTag, loc: SourceLoc) *Expr {
+    const expr = @alloc(Expr, 1)
+    expr.tag = tag
+    expr.loc = loc
+    expr.int_value = 0
+    expr.str_value = ""
+    expr.bool_value = false
+    expr.ident_name = ""
+    expr.binary_op = TokenType.Error
+    expr.binary_left = null
+    expr.binary_right = null
+    expr.unary_op = TokenType.Error
+    expr.unary_operand = null
+    expr.call_callee = null
+    expr.call_args = null
+    expr.index_base = null
+    expr.index_index = null
+    expr.field_base = null
+    expr.field_name = ""
+    expr.deref_operand = null
+    expr.addressof_operand = null
+    expr.struct_type_name = ""
+    expr.struct_fields = null
+    expr.array_elements = null
+    return expr
+}
+
+fn make_stmt(tag: StmtTag, loc: SourceLoc) *Stmt {
+    const stmt = @alloc(Stmt, 1)
+    stmt.tag = tag
+    stmt.loc = loc
+    stmt.decl_name = ""
+    stmt.decl_type = null
+    stmt.decl_init = null
+    stmt.assign_target = null
+    stmt.assign_value = null
+    stmt.if_condition = null
+    stmt.if_then = null
+    stmt.if_else = null
+    stmt.while_condition = null
+    stmt.while_body = null
+    stmt.for_var_name = ""
+    stmt.for_iterable = null
+    stmt.for_body = null
+    stmt.forrange_var_name = ""
+    stmt.forrange_start = null
+    stmt.forrange_end = null
+    stmt.forrange_body = null
+    stmt.return_value = null
+    stmt.block_stmts = null
+    stmt.expr_stmt = null
+    stmt.fn_name = ""
+    stmt.fn_params = null
+    stmt.fn_return_type = null
+    stmt.fn_body = null
+    stmt.struct_name = ""
+    stmt.struct_fields = null
+    stmt.enum_name = ""
+    stmt.enum_variants = null
+    return stmt
+}
+
+fn make_type_named(name: string, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Named
+    t.name = name
+    t.inner = null
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_pointer(inner: *TypeNode, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Pointer
+    t.name = ""
+    t.inner = inner
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_array(inner: *TypeNode, size: u64, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Array
+    t.name = ""
+    t.inner = inner
+    t.array_size = size
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_slice(inner: *TypeNode, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Slice
+    t.name = ""
+    t.inner = inner
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+// parser.cot - Parser for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Recursive descent parser with Pratt expression parsing
+
+// ============================================================================
+// Parser State
+// ============================================================================
+
+struct Parser {
+    source: string,
+    tokens: *TokenList,
+    current: u64,
+    had_error: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+// Parse result
+struct ParseResult {
+    ast: AST,
+    ok: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+fn parser_new(source: string, tokens: *TokenList) Parser {
+    return Parser{
+        .source = source,
+        .tokens = tokens,
+        .current = 0,
+        .had_error = false,
+        .error_msg = "",
+        .error_line = 0,
+        .error_col = 0,
+    }
+}
+
+// ============================================================================
+// Parser Helpers
+// ============================================================================
+
+fn parser_peek(p: *Parser) *Token {
+    return tokenlist_get(p.tokens, p.current)
+}
+
+fn parser_peek_type(p: *Parser) TokenType {
+    return parser_peek(p).type
+}
+
+fn parser_previous(p: *Parser) *Token {
+    return tokenlist_get(p.tokens, p.current - 1)
+}
+
+fn parser_is_at_end(p: *Parser) bool {
+    return parser_peek_type(p) == TokenType.Eof
+}
+
+fn parser_advance(p: *Parser) *Token {
+    if (not parser_is_at_end(p)) {
+        p.current = p.current + 1
+    }
+    return parser_previous(p)
+}
+
+fn parser_check(p: *Parser, type: TokenType) bool {
+    if (parser_is_at_end(p)) {
+        return false
+    }
+    return parser_peek_type(p) == type
+}
+
+fn parser_match(p: *Parser, type: TokenType) bool {
+    if (parser_check(p, type)) {
+        parser_advance(p)
+        return true
+    }
+    return false
+}
+
+fn parser_error(p: *Parser, msg: string) void {
+    if (p.had_error) {
+        return  // Only report first error
+    }
+    p.had_error = true
+    p.error_msg = msg
+    const tok = parser_peek(p)
+    p.error_line = tok.line
+    p.error_col = tok.column
+}
+
+fn parser_consume(p: *Parser, type: TokenType, msg: string) bool {
+    if (parser_check(p, type)) {
+        parser_advance(p)
+        return true
+    }
+    parser_error(p, msg)
+    return false
+}
+
+fn parser_current_loc(p: *Parser) SourceLoc {
+    const tok = parser_peek(p)
+    return SourceLoc{
+        .line = tok.line,
+        .column = tok.column,
+        .offset = tok.start,
+    }
+}
+
+fn parser_token_text(p: *Parser, tok: *Token) string {
+    return str_substring(p.source, tok.start, tok.start + tok.length)
+}
+
+// ============================================================================
+// Precedence for Pratt Parser
+// ============================================================================
+
+// Precedence levels (higher = binds tighter)
+const PREC_NONE: u64 = 0
+const PREC_ASSIGNMENT: u64 = 1
+const PREC_OR: u64 = 2
+const PREC_AND: u64 = 3
+const PREC_EQUALITY: u64 = 4
+const PREC_COMPARISON: u64 = 5
+const PREC_TERM: u64 = 6
+const PREC_FACTOR: u64 = 7
+const PREC_UNARY: u64 = 8
+const PREC_CALL: u64 = 9
+const PREC_PRIMARY: u64 = 10
+
+fn get_precedence(type: TokenType) u64 {
+    if (type == TokenType.KwOr) { return PREC_OR }
+    if (type == TokenType.KwAnd) { return PREC_AND }
+    if (type == TokenType.EqualEqual) { return PREC_EQUALITY }
+    if (type == TokenType.BangEqual) { return PREC_EQUALITY }
+    if (type == TokenType.Less) { return PREC_COMPARISON }
+    if (type == TokenType.LessEqual) { return PREC_COMPARISON }
+    if (type == TokenType.Greater) { return PREC_COMPARISON }
+    if (type == TokenType.GreaterEqual) { return PREC_COMPARISON }
+    if (type == TokenType.Plus) { return PREC_TERM }
+    if (type == TokenType.Minus) { return PREC_TERM }
+    if (type == TokenType.Star) { return PREC_FACTOR }
+    if (type == TokenType.Slash) { return PREC_FACTOR }
+    if (type == TokenType.Percent) { return PREC_FACTOR }
+    return PREC_NONE
+}
+
+fn is_binary_op(type: TokenType) bool {
+    return get_precedence(type) > PREC_NONE
+}
+
+// ============================================================================
+// Expression Parsing
+// ============================================================================
+
+fn parse_expression(p: *Parser) *Expr {
+    return parse_precedence(p, PREC_ASSIGNMENT)
+}
+
+fn parse_precedence(p: *Parser, min_prec: u64) *Expr {
+    var left = parse_unary(p)
+    if (p.had_error) { return left }
+
+    while (is_binary_op(parser_peek_type(p)) and get_precedence(parser_peek_type(p)) >= min_prec) {
+        const op_tok = parser_advance(p)
+        const op = op_tok.type
+        const prec = get_precedence(op)
+
+        // Parse right side with higher precedence (left-associative)
+        const right = parse_precedence(p, prec + 1)
+        if (p.had_error) { return left }
+
+        // Create binary expression
+        const bin = make_expr(ExprTag.Binary, left.loc)
+        bin.binary_op = op
+        bin.binary_left = left
+        bin.binary_right = right
+        left = bin
+    }
+
+    return left
+}
+
+fn parse_unary(p: *Parser) *Expr {
+    // Unary operators: not, -, &
+    if (parser_match(p, TokenType.KwNot)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.Unary, loc)
+        expr.unary_op = TokenType.KwNot
+        expr.unary_operand = operand
+        return expr
+    }
+
+    if (parser_match(p, TokenType.Minus)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.Unary, loc)
+        expr.unary_op = TokenType.Minus
+        expr.unary_operand = operand
+        return expr
+    }
+
+    if (parser_match(p, TokenType.Ampersand)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.AddressOf, loc)
+        expr.addressof_operand = operand
+        return expr
+    }
+
+    return parse_postfix(p)
+}
+
+fn parse_postfix(p: *Parser) *Expr {
+    var expr = parse_primary(p)
+    if (p.had_error) { return expr }
+
+    while (true) {
+        // Function call: expr(args)
+        if (parser_match(p, TokenType.LParen)) {
+            expr = parse_call(p, expr)
+            if (p.had_error) { return expr }
+        }
+        // Array index: expr[index]
+        else if (parser_match(p, TokenType.LBracket)) {
+            const loc = parser_current_loc(p)
+            const index = parse_expression(p)
+            if (not parser_consume(p, TokenType.RBracket, "Expected ']' after index")) {
+                return expr
+            }
+            const idx_expr = make_expr(ExprTag.Index, loc)
+            idx_expr.index_base = expr
+            idx_expr.index_index = index
+            expr = idx_expr
+        }
+        // Field access: expr.field or expr.*
+        else if (parser_match(p, TokenType.Dot)) {
+            const loc = parser_current_loc(p)
+            if (parser_match(p, TokenType.Star)) {
+                // Dereference: expr.*
+                const deref = make_expr(ExprTag.Deref, loc)
+                deref.deref_operand = expr
+                expr = deref
+            } else {
+                // Field access: expr.field
+                if (not parser_check(p, TokenType.Identifier)) {
+                    parser_error(p, "Expected field name after '.'")
+                    return expr
+                }
+                const name_tok = parser_advance(p)
+                const field = make_expr(ExprTag.Field, loc)
+                field.field_base = expr
+                field.field_name = parser_token_text(p, name_tok)
+                expr = field
+            }
+        }
+        // Deref shorthand: expr.*
+        else if (parser_match(p, TokenType.DotStar)) {
+            const loc = parser_current_loc(p)
+            const deref = make_expr(ExprTag.Deref, loc)
+            deref.deref_operand = expr
+            expr = deref
+        }
+        else {
+            break
+        }
+    }
+
+    return expr
+}
+
+fn parse_call(p: *Parser, callee: *Expr) *Expr {
+    const loc = callee.loc
+    const args = @alloc(ExprList, 1)
+    args.* = exprlist_new()
+
+    if (not parser_check(p, TokenType.RParen)) {
+        while (true) {
+            const arg = parse_expression(p)
+            if (p.had_error) { break }
+            exprlist_push(args, arg)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after arguments")) {
+        return callee
+    }
+
+    const call = make_expr(ExprTag.Call, loc)
+    call.call_callee = callee
+    call.call_args = args
+    return call
+}
+
+fn parse_primary(p: *Parser) *Expr {
+    const loc = parser_current_loc(p)
+
+    // Integer literal
+    if (parser_match(p, TokenType.Integer)) {
+        const tok = parser_previous(p)
+        const text = parser_token_text(p, tok)
+        const expr = make_expr(ExprTag.Integer, loc)
+        expr.int_value = parse_int(text)
+        return expr
+    }
+
+    // String literal
+    if (parser_match(p, TokenType.String)) {
+        const tok = parser_previous(p)
+        const text = parser_token_text(p, tok)
+        const expr = make_expr(ExprTag.String, loc)
+        // Remove quotes
+        expr.str_value = str_substring(text, 1, str_len(text) - 1)
+        return expr
+    }
+
+    // Boolean literals
+    if (parser_match(p, TokenType.KwTrue)) {
+        const expr = make_expr(ExprTag.Bool, loc)
+        expr.bool_value = true
+        return expr
+    }
+
+    if (parser_match(p, TokenType.KwFalse)) {
+        const expr = make_expr(ExprTag.Bool, loc)
+        expr.bool_value = false
+        return expr
+    }
+
+    // Null
+    if (parser_match(p, TokenType.KwNull)) {
+        return make_expr(ExprTag.Null, loc)
+    }
+
+    // Identifier or struct init
+    if (parser_match(p, TokenType.Identifier)) {
+        const tok = parser_previous(p)
+        const name = parser_token_text(p, tok)
+
+        // Check for struct initialization: Name{ ... }
+        if (parser_check(p, TokenType.LBrace)) {
+            return parse_struct_init(p, name, loc)
+        }
+
+        const expr = make_expr(ExprTag.Identifier, loc)
+        expr.ident_name = name
+        return expr
+    }
+
+    // Parenthesized expression
+    if (parser_match(p, TokenType.LParen)) {
+        const expr = parse_expression(p)
+        if (not parser_consume(p, TokenType.RParen, "Expected ')' after expression")) {
+            return expr
+        }
+        return expr
+    }
+
+    // Array initialization: [expr, expr, ...]
+    if (parser_match(p, TokenType.LBracket)) {
+        return parse_array_init(p, loc)
+    }
+
+    parser_error(p, "Expected expression")
+    return make_expr(ExprTag.Null, loc)
+}
+
+fn parse_struct_init(p: *Parser, type_name: string, loc: SourceLoc) *Expr {
+    parser_consume(p, TokenType.LBrace, "Expected '{' for struct initialization")
+
+    const fields = @alloc(FieldInitList, 1)
+    fields.* = fieldinitlist_new()
+
+    if (not parser_check(p, TokenType.RBrace)) {
+        while (true) {
+            // Expect .field = value
+            if (not parser_consume(p, TokenType.Dot, "Expected '.' before field name")) {
+                break
+            }
+            if (not parser_check(p, TokenType.Identifier)) {
+                parser_error(p, "Expected field name")
+                break
+            }
+            const name_tok = parser_advance(p)
+            const field_name = parser_token_text(p, name_tok)
+
+            if (not parser_consume(p, TokenType.Equal, "Expected '=' after field name")) {
+                break
+            }
+
+            const value = parse_expression(p)
+            if (p.had_error) { break }
+
+            const init = @alloc(FieldInit, 1)
+            init.name = field_name
+            init.value = value
+            fieldinitlist_push(fields, init)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after struct fields")
+
+    const expr = make_expr(ExprTag.StructInit, loc)
+    expr.struct_type_name = type_name
+    expr.struct_fields = fields
+    return expr
+}
+
+fn parse_array_init(p: *Parser, loc: SourceLoc) *Expr {
+    const elements = @alloc(ExprList, 1)
+    elements.* = exprlist_new()
+
+    if (not parser_check(p, TokenType.RBracket)) {
+        while (true) {
+            const elem = parse_expression(p)
+            if (p.had_error) { break }
+            exprlist_push(elements, elem)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    parser_consume(p, TokenType.RBracket, "Expected ']' after array elements")
+
+    const expr = make_expr(ExprTag.ArrayInit, loc)
+    expr.array_elements = elements
+    return expr
+}
+
+fn parse_int(text: string) i64 {
+    var result: i64 = 0
+    var i: u64 = 0
+    const len = str_len(text)
+
+    // Check for hex
+    if (len > 2 and str_char_at(text, 0) == 48) {
+        const x = str_char_at(text, 1)
+        if (x == 120 or x == 88) {
+            // Hex number
+            i = 2
+            while (i < len) {
+                const c = str_char_at(text, i)
+                result = result * 16
+                if (c >= 48 and c <= 57) {
+                    result = result + (c - 48)
+                } else if (c >= 65 and c <= 70) {
+                    result = result + (c - 55)
+                } else if (c >= 97 and c <= 102) {
+                    result = result + (c - 87)
+                }
+                i = i + 1
+            }
+            return result
+        }
+    }
+
+    // Decimal number
+    while (i < len) {
+        const c = str_char_at(text, i)
+        if (c >= 48 and c <= 57) {
+            result = result * 10 + (c - 48)
+        }
+        i = i + 1
+    }
+
+    return result
+}
+
+// ============================================================================
+// Type Parsing
+// ============================================================================
+
+fn parse_type(p: *Parser) *TypeNode {
+    const loc = parser_current_loc(p)
+
+    // Pointer type: *T
+    if (parser_match(p, TokenType.Star)) {
+        const inner = parse_type(p)
+        return make_type_pointer(inner, loc)
+    }
+
+    // Array or slice type: [N]T or []T
+    if (parser_match(p, TokenType.LBracket)) {
+        if (parser_match(p, TokenType.RBracket)) {
+            // Slice: []T
+            const inner = parse_type(p)
+            return make_type_slice(inner, loc)
+        } else {
+            // Array: [N]T
+            if (not parser_check(p, TokenType.Integer)) {
+                parser_error(p, "Expected array size")
+                return make_type_named("error", loc)
+            }
+            const size_tok = parser_advance(p)
+            const size = parse_int(parser_token_text(p, size_tok))
+
+            if (not parser_consume(p, TokenType.RBracket, "Expected ']' after array size")) {
+                return make_type_named("error", loc)
+            }
+
+            const inner = parse_type(p)
+            return make_type_array(inner, size, loc)
+        }
+    }
+
+    // Named type
+    if (parser_check(p, TokenType.Identifier)) {
+        const tok = parser_advance(p)
+        const name = parser_token_text(p, tok)
+        return make_type_named(name, loc)
+    }
+
+    parser_error(p, "Expected type")
+    return make_type_named("error", loc)
+}
+
+// ============================================================================
+// Statement Parsing
+// ============================================================================
+
+fn parse_statement(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    // Variable declaration: var name: Type = value
+    if (parser_match(p, TokenType.KwVar)) {
+        return parse_var_decl(p, false, loc)
+    }
+
+    // Constant declaration: const name = value
+    if (parser_match(p, TokenType.KwConst)) {
+        return parse_var_decl(p, true, loc)
+    }
+
+    // If statement
+    if (parser_match(p, TokenType.KwIf)) {
+        return parse_if(p, loc)
+    }
+
+    // While statement
+    if (parser_match(p, TokenType.KwWhile)) {
+        return parse_while(p, loc)
+    }
+
+    // For statement
+    if (parser_match(p, TokenType.KwFor)) {
+        return parse_for(p, loc)
+    }
+
+    // Return statement
+    if (parser_match(p, TokenType.KwReturn)) {
+        return parse_return(p, loc)
+    }
+
+    // Break statement
+    if (parser_match(p, TokenType.KwBreak)) {
+        return make_stmt(StmtTag.Break, loc)
+    }
+
+    // Continue statement
+    if (parser_match(p, TokenType.KwContinue)) {
+        return make_stmt(StmtTag.Continue, loc)
+    }
+
+    // Block
+    if (parser_check(p, TokenType.LBrace)) {
+        return parse_block(p)
+    }
+
+    // Expression statement or assignment
+    return parse_expr_or_assign(p, loc)
+}
+
+fn parse_var_decl(p: *Parser, is_const: bool, loc: SourceLoc) *Stmt {
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected variable name")
+        return make_stmt(StmtTag.VarDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    var type_node: *TypeNode = null
+    if (parser_match(p, TokenType.Colon)) {
+        type_node = parse_type(p)
+    }
+
+    var init_expr: *Expr = null
+    if (parser_match(p, TokenType.Equal)) {
+        init_expr = parse_expression(p)
+    }
+
+    var tag = StmtTag.VarDecl
+    if (is_const) {
+        tag = StmtTag.ConstDecl
+    }
+    const stmt = make_stmt(tag, loc)
+    stmt.decl_name = name
+    stmt.decl_type = type_node
+    stmt.decl_init = init_expr
+    return stmt
+}
+
+fn parse_if(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'if'")) {
+        return make_stmt(StmtTag.If, loc)
+    }
+    const condition = parse_expression(p)
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after condition")) {
+        return make_stmt(StmtTag.If, loc)
+    }
+
+    const then_branch = parse_block(p)
+
+    var else_branch: *Stmt = null
+    if (parser_match(p, TokenType.KwElse)) {
+        if (parser_check(p, TokenType.KwIf)) {
+            parser_advance(p)
+            else_branch = parse_if(p, parser_current_loc(p))
+        } else {
+            else_branch = parse_block(p)
+        }
+    }
+
+    const stmt = make_stmt(StmtTag.If, loc)
+    stmt.if_condition = condition
+    stmt.if_then = then_branch
+    stmt.if_else = else_branch
+    return stmt
+}
+
+fn parse_while(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'while'")) {
+        return make_stmt(StmtTag.While, loc)
+    }
+    const condition = parse_expression(p)
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after condition")) {
+        return make_stmt(StmtTag.While, loc)
+    }
+
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.While, loc)
+    stmt.while_condition = condition
+    stmt.while_body = body
+    return stmt
+}
+
+fn parse_for(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'for'")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected variable name in for loop")
+        return make_stmt(StmtTag.For, loc)
+    }
+    const var_tok = parser_advance(p)
+    const var_name = parser_token_text(p, var_tok)
+
+    if (not parser_consume(p, TokenType.KwIn, "Expected 'in' after variable name")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    const iter_expr = parse_expression(p)
+
+    // Check if it's a range: start..end
+    if (parser_match(p, TokenType.DotDot)) {
+        const end_expr = parse_expression(p)
+        if (not parser_consume(p, TokenType.RParen, "Expected ')' after range")) {
+            return make_stmt(StmtTag.ForRange, loc)
+        }
+
+        const body = parse_block(p)
+
+        const stmt = make_stmt(StmtTag.ForRange, loc)
+        stmt.forrange_var_name = var_name
+        stmt.forrange_start = iter_expr
+        stmt.forrange_end = end_expr
+        stmt.forrange_body = body
+        return stmt
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after iterable")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.For, loc)
+    stmt.for_var_name = var_name
+    stmt.for_iterable = iter_expr
+    stmt.for_body = body
+    return stmt
+}
+
+fn parse_return(p: *Parser, loc: SourceLoc) *Stmt {
+    const stmt = make_stmt(StmtTag.Return, loc)
+
+    // Check if there's a return value (not followed by } or EOF)
+    if (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        // Peek to see if next token could start an expression
+        const next = parser_peek_type(p)
+        if (next != TokenType.KwVar and next != TokenType.KwConst and
+            next != TokenType.KwIf and next != TokenType.KwWhile and
+            next != TokenType.KwFor and next != TokenType.KwReturn and
+            next != TokenType.KwBreak and next != TokenType.KwContinue and
+            next != TokenType.KwFn and next != TokenType.KwStruct and
+            next != TokenType.KwEnum) {
+            stmt.return_value = parse_expression(p)
+        }
+    }
+
+    return stmt
+}
+
+fn parse_block(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{'")) {
+        return make_stmt(StmtTag.Block, loc)
+    }
+
+    const stmts = @alloc(StmtList, 1)
+    stmts.* = stmtlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        const stmt = parse_statement(p)
+        if (p.had_error) { break }
+        stmtlist_push(stmts, stmt)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}'")
+
+    const block = make_stmt(StmtTag.Block, loc)
+    block.block_stmts = stmts
+    return block
+}
+
+fn parse_expr_or_assign(p: *Parser, loc: SourceLoc) *Stmt {
+    const expr = parse_expression(p)
+    if (p.had_error) {
+        return make_stmt(StmtTag.ExprStmt, loc)
+    }
+
+    // Check for assignment
+    if (parser_match(p, TokenType.Equal)) {
+        const value = parse_expression(p)
+        const stmt = make_stmt(StmtTag.Assignment, loc)
+        stmt.assign_target = expr
+        stmt.assign_value = value
+        return stmt
+    }
+
+    // Expression statement
+    const stmt = make_stmt(StmtTag.ExprStmt, loc)
+    stmt.expr_stmt = expr
+    return stmt
+}
+
+// ============================================================================
+// Top-Level Declarations
+// ============================================================================
+
+fn parse_fn_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected function name")
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    // Parameters
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after function name")) {
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+
+    const params = @alloc(ParamList, 1)
+    params.* = paramlist_new()
+
+    if (not parser_check(p, TokenType.RParen)) {
+        while (true) {
+            if (not parser_check(p, TokenType.Identifier)) {
+                parser_error(p, "Expected parameter name")
+                break
+            }
+            const param_name_tok = parser_advance(p)
+            const param_name = parser_token_text(p, param_name_tok)
+
+            if (not parser_consume(p, TokenType.Colon, "Expected ':' after parameter name")) {
+                break
+            }
+
+            const param_type = parse_type(p)
+
+            const param = @alloc(Param, 1)
+            param.name = param_name
+            param.type = param_type
+            paramlist_push(params, param)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after parameters")) {
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+
+    // Return type
+    var return_type: *TypeNode = make_type_named("void", loc)
+    if (not parser_check(p, TokenType.LBrace)) {
+        return_type = parse_type(p)
+    }
+
+    // Body
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.FnDecl, loc)
+    stmt.fn_name = name
+    stmt.fn_params = params
+    stmt.fn_return_type = return_type
+    stmt.fn_body = body
+    return stmt
+}
+
+fn parse_struct_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected struct name")
+        return make_stmt(StmtTag.StructDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{' after struct name")) {
+        return make_stmt(StmtTag.StructDecl, loc)
+    }
+
+    const fields = @alloc(StructFieldList, 1)
+    fields.* = structfieldlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        if (not parser_check(p, TokenType.Identifier)) {
+            parser_error(p, "Expected field name")
+            break
+        }
+        const field_name_tok = parser_advance(p)
+        const field_name = parser_token_text(p, field_name_tok)
+
+        if (not parser_consume(p, TokenType.Colon, "Expected ':' after field name")) {
+            break
+        }
+
+        const field_type = parse_type(p)
+
+        const field = @alloc(StructField, 1)
+        field.name = field_name
+        field.type = field_type
+        structfieldlist_push(fields, field)
+
+        // Optional comma
+        parser_match(p, TokenType.Comma)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after struct fields")
+
+    const stmt = make_stmt(StmtTag.StructDecl, loc)
+    stmt.struct_name = name
+    stmt.struct_fields = fields
+    return stmt
+}
+
+fn parse_enum_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected enum name")
+        return make_stmt(StmtTag.EnumDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{' after enum name")) {
+        return make_stmt(StmtTag.EnumDecl, loc)
+    }
+
+    const variants = @alloc(StringList, 1)
+    variants.* = stringlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        if (not parser_check(p, TokenType.Identifier)) {
+            parser_error(p, "Expected variant name")
+            break
+        }
+        const variant_tok = parser_advance(p)
+        const variant_name = parser_token_text(p, variant_tok)
+        stringlist_push(variants, variant_name)
+
+        // Optional comma
+        parser_match(p, TokenType.Comma)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after enum variants")
+
+    const stmt = make_stmt(StmtTag.EnumDecl, loc)
+    stmt.enum_name = name
+    stmt.enum_variants = variants
+    return stmt
+}
+
+fn parse_top_level(p: *Parser) *Stmt {
+    if (parser_match(p, TokenType.KwFn)) {
+        return parse_fn_decl(p)
+    }
+
+    if (parser_match(p, TokenType.KwStruct)) {
+        return parse_struct_decl(p)
+    }
+
+    if (parser_match(p, TokenType.KwEnum)) {
+        return parse_enum_decl(p)
+    }
+
+    // Top-level var/const
+    const loc = parser_current_loc(p)
+    if (parser_match(p, TokenType.KwVar)) {
+        return parse_var_decl(p, false, loc)
+    }
+    if (parser_match(p, TokenType.KwConst)) {
+        return parse_var_decl(p, true, loc)
+    }
+
+    parser_error(p, "Expected declaration")
+    return make_stmt(StmtTag.ExprStmt, loc)
+}
+
+// ============================================================================
+// Main Parse Function
+// ============================================================================
+
+fn parse(source: string, tokens: *TokenList) ParseResult {
+    var p = parser_new(source, tokens)
+    var ast = ast_new()
+
+    while (not parser_is_at_end(&p)) {
+        const stmt = parse_top_level(&p)
+        if (p.had_error) {
+            break
+        }
+        stmtlist_push(ast.statements, stmt)
+    }
+
+    return ParseResult{
+        .ast = ast,
+        .ok = not p.had_error,
+        .error_msg = p.error_msg,
+        .error_line = p.error_line,
+        .error_col = p.error_col,
+    }
+}
+// ir.cot - Intermediate Representation for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// A simple stack-based IR that maps directly to bytecode.
+// Uses instruction encoding compatible with Cot bytecode format.
+
+// ============================================================================
+// IR Types
+// ============================================================================
+
+enum IRType {
+    Void,
+    Bool,
+    I64,
+    U64,
+    U8,
+    U16,
+    U32,
+    String,
+    Pointer,
+    Array,
+    Slice,
+    Struct,
+    Enum,
+}
+
+struct IRTypeInfo {
+    tag: IRType,
+    name: string,           // For struct/enum
+    inner: *IRTypeInfo,     // For pointer/array/slice
+    array_size: u64,        // For array
+    fields: *IRFieldList,   // For struct
+    variants: *StringList,  // For enum
+}
+
+struct IRField {
+    name: string,
+    type: *IRTypeInfo,
+    offset: u64,
+}
+
+struct IRFieldList {
+    items: []*IRField,
+    len: u64,
+    cap: u64,
+}
+
+fn irfieldlist_new() IRFieldList {
+    return IRFieldList{
+        .items = @alloc([]*IRField, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn irfieldlist_push(list: *IRFieldList, field: *IRField) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRField, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = field
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// IR Instructions
+// ============================================================================
+
+enum IROp {
+    // Constants
+    ConstInt,       // Push integer constant
+    ConstString,    // Push string constant
+    ConstBool,      // Push boolean constant
+    ConstNull,      // Push null
+
+    // Variables
+    LoadLocal,      // Load local variable
+    StoreLocal,     // Store local variable
+    LoadGlobal,     // Load global variable
+    StoreGlobal,    // Store global variable
+
+    // Arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Neg,
+
+    // Comparison
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Logical
+    And,
+    Or,
+    Not,
+
+    // Memory
+    Load,           // Dereference pointer
+    Store,          // Store through pointer
+    GetFieldPtr,    // Get pointer to struct field
+    GetIndexPtr,    // Get pointer to array element
+    AddressOf,      // Get address of local
+
+    // Control flow
+    Jump,           // Unconditional jump
+    JumpIf,         // Jump if true
+    JumpIfNot,      // Jump if false
+    Call,           // Call function
+    Return,         // Return from function
+
+    // Struct/Array
+    AllocStruct,    // Allocate struct
+    AllocArray,     // Allocate array
+
+    // Type
+    Convert,        // Type conversion
+}
+
+struct IRInst {
+    op: IROp,
+    operand_i64: i64,
+    operand_u64: u64,
+    operand_str: string,
+    operand_bool: bool,
+    target_label: u64,      // For jumps
+    result_type: *IRTypeInfo,
+}
+
+struct IRInstList {
+    items: []*IRInst,
+    len: u64,
+    cap: u64,
+}
+
+fn irinstlist_new() IRInstList {
+    return IRInstList{
+        .items = @alloc([]*IRInst, 64),
+        .len = 0,
+        .cap = 64,
+    }
+}
+
+fn irinstlist_push(list: *IRInstList, inst: *IRInst) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRInst, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = inst
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// IR Function
+// ============================================================================
+
+struct IRLocal {
+    name: string,
+    type: *IRTypeInfo,
+    index: u64,
+}
+
+struct IRLocalList {
+    items: []*IRLocal,
+    len: u64,
+    cap: u64,
+}
+
+fn irlocallist_new() IRLocalList {
+    return IRLocalList{
+        .items = @alloc([]*IRLocal, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irlocallist_push(list: *IRLocalList, local: *IRLocal) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRLocal, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = local
+    list.len = list.len + 1
+}
+
+struct IRParam {
+    name: string,
+    type: *IRTypeInfo,
+}
+
+struct IRParamList {
+    items: []*IRParam,
+    len: u64,
+    cap: u64,
+}
+
+fn irparamlist_new() IRParamList {
+    return IRParamList{
+        .items = @alloc([]*IRParam, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn irparamlist_push(list: *IRParamList, param: *IRParam) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRParam, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = param
+    list.len = list.len + 1
+}
+
+struct IRFunction {
+    name: string,
+    params: *IRParamList,
+    return_type: *IRTypeInfo,
+    locals: *IRLocalList,
+    instructions: *IRInstList,
+    label_count: u64,
+}
+
+fn irfunction_new(name: string) *IRFunction {
+    const fn_ptr = @alloc(IRFunction, 1)
+    fn_ptr.name = name
+
+    const params = @alloc(IRParamList, 1)
+    params.* = irparamlist_new()
+    fn_ptr.params = params
+
+    fn_ptr.return_type = null
+
+    const locals = @alloc(IRLocalList, 1)
+    locals.* = irlocallist_new()
+    fn_ptr.locals = locals
+
+    const insts = @alloc(IRInstList, 1)
+    insts.* = irinstlist_new()
+    fn_ptr.instructions = insts
+
+    fn_ptr.label_count = 0
+
+    return fn_ptr
+}
+
+fn irfunction_new_label(func: *IRFunction) u64 {
+    const label = func.label_count
+    func.label_count = func.label_count + 1
+    return label
+}
+
+fn irfunction_add_local(func: *IRFunction, name: string, type: *IRTypeInfo) u64 {
+    const index = func.locals.len
+    const local = @alloc(IRLocal, 1)
+    local.name = name
+    local.type = type
+    local.index = index
+    irlocallist_push(func.locals, local)
+    return index
+}
+
+fn irfunction_emit(func: *IRFunction, inst: *IRInst) void {
+    irinstlist_push(func.instructions, inst)
+}
+
+// ============================================================================
+// IR Module
+// ============================================================================
+
+struct IRFunctionList {
+    items: []*IRFunction,
+    len: u64,
+    cap: u64,
+}
+
+fn irfunctionlist_new() IRFunctionList {
+    return IRFunctionList{
+        .items = @alloc([]*IRFunction, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irfunctionlist_push(list: *IRFunctionList, func: *IRFunction) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRFunction, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = func
+    list.len = list.len + 1
+}
+
+struct IRStructType {
+    name: string,
+    type_info: *IRTypeInfo,
+}
+
+struct IRStructTypeList {
+    items: []*IRStructType,
+    len: u64,
+    cap: u64,
+}
+
+fn irstructtypelist_new() IRStructTypeList {
+    return IRStructTypeList{
+        .items = @alloc([]*IRStructType, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irstructtypelist_push(list: *IRStructTypeList, st: *IRStructType) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRStructType, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = st
+    list.len = list.len + 1
+}
+
+struct IREnumType {
+    name: string,
+    variants: *StringList,
+}
+
+struct IREnumTypeList {
+    items: []*IREnumType,
+    len: u64,
+    cap: u64,
+}
+
+fn irenumtypelist_new() IREnumTypeList {
+    return IREnumTypeList{
+        .items = @alloc([]*IREnumType, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irenumtypelist_push(list: *IREnumTypeList, et: *IREnumType) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IREnumType, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = et
+    list.len = list.len + 1
+}
+
+struct IRGlobal {
+    name: string,
+    type: *IRTypeInfo,
+    index: u64,
+    is_const: bool,
+}
+
+struct IRGlobalList {
+    items: []*IRGlobal,
+    len: u64,
+    cap: u64,
+}
+
+fn irgloballist_new() IRGlobalList {
+    return IRGlobalList{
+        .items = @alloc([]*IRGlobal, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irgloballist_push(list: *IRGlobalList, global: *IRGlobal) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRGlobal, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = global
+    list.len = list.len + 1
+}
+
+struct IRModule {
+    functions: *IRFunctionList,
+    structs: *IRStructTypeList,
+    enums: *IREnumTypeList,
+    globals: *IRGlobalList,
+    string_constants: *StringList,
+}
+
+fn irmodule_new() *IRModule {
+    const mod = @alloc(IRModule, 1)
+
+    const funcs = @alloc(IRFunctionList, 1)
+    funcs.* = irfunctionlist_new()
+    mod.functions = funcs
+
+    const structs = @alloc(IRStructTypeList, 1)
+    structs.* = irstructtypelist_new()
+    mod.structs = structs
+
+    const enums = @alloc(IREnumTypeList, 1)
+    enums.* = irenumtypelist_new()
+    mod.enums = enums
+
+    const globals = @alloc(IRGlobalList, 1)
+    globals.* = irgloballist_new()
+    mod.globals = globals
+
+    const strings = @alloc(StringList, 1)
+    strings.* = stringlist_new()
+    mod.string_constants = strings
+
+    return mod
+}
+
+fn irmodule_add_string(mod: *IRModule, s: string) u64 {
+    // Check if string already exists
+    for (i in 0..mod.string_constants.len) {
+        if (mod.string_constants.items[i] == s) {
+            return i
+        }
+    }
+    const index = mod.string_constants.len
+    stringlist_push(mod.string_constants, s)
+    return index
+}
+
+fn irmodule_find_function(mod: *IRModule, name: string) *IRFunction {
+    for (i in 0..mod.functions.len) {
+        if (mod.functions.items[i].name == name) {
+            return mod.functions.items[i]
+        }
+    }
+    return null
+}
+
+fn irmodule_find_struct(mod: *IRModule, name: string) *IRStructType {
+    for (i in 0..mod.structs.len) {
+        if (mod.structs.items[i].name == name) {
+            return mod.structs.items[i]
+        }
+    }
+    return null
+}
+
+fn irmodule_find_enum(mod: *IRModule, name: string) *IREnumType {
+    for (i in 0..mod.enums.len) {
+        if (mod.enums.items[i].name == name) {
+            return mod.enums.items[i]
+        }
+    }
+    return null
+}
+
+// ============================================================================
+// IR Instruction Constructors
+// ============================================================================
+
+fn make_inst(op: IROp) *IRInst {
+    const inst = @alloc(IRInst, 1)
+    inst.op = op
+    inst.operand_i64 = 0
+    inst.operand_u64 = 0
+    inst.operand_str = ""
+    inst.operand_bool = false
+    inst.target_label = 0
+    inst.result_type = null
+    return inst
+}
+
+fn make_inst_i64(op: IROp, value: i64) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_i64 = value
+    return inst
+}
+
+fn make_inst_u64(op: IROp, value: u64) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_u64 = value
+    return inst
+}
+
+fn make_inst_str(op: IROp, value: string) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_str = value
+    return inst
+}
+
+fn make_inst_bool(op: IROp, value: bool) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_bool = value
+    return inst
+}
+
+fn make_inst_label(op: IROp, label: u64) *IRInst {
+    const inst = make_inst(op)
+    inst.target_label = label
+    return inst
+}
+
+// ============================================================================
+// IR Type Constructors
+// ============================================================================
+
+fn make_ir_type(tag: IRType) *IRTypeInfo {
+    const t = @alloc(IRTypeInfo, 1)
+    t.tag = tag
+    t.name = ""
+    t.inner = null
+    t.array_size = 0
+    t.fields = null
+    t.variants = null
+    return t
+}
+
+fn make_ir_type_named(tag: IRType, name: string) *IRTypeInfo {
+    const t = make_ir_type(tag)
+    t.name = name
+    return t
+}
+
+fn make_ir_type_pointer(inner: *IRTypeInfo) *IRTypeInfo {
+    const t = make_ir_type(IRType.Pointer)
+    t.inner = inner
+    return t
+}
+
+fn make_ir_type_array(inner: *IRTypeInfo, size: u64) *IRTypeInfo {
+    const t = make_ir_type(IRType.Array)
+    t.inner = inner
+    t.array_size = size
+    return t
+}
+
+fn make_ir_type_slice(inner: *IRTypeInfo) *IRTypeInfo {
+    const t = make_ir_type(IRType.Slice)
+    t.inner = inner
+    return t
+}
+
+// Built-in type constants
+fn ir_type_void() *IRTypeInfo { return make_ir_type(IRType.Void) }
+fn ir_type_bool() *IRTypeInfo { return make_ir_type(IRType.Bool) }
+fn ir_type_i64() *IRTypeInfo { return make_ir_type(IRType.I64) }
+fn ir_type_u64() *IRTypeInfo { return make_ir_type(IRType.U64) }
+fn ir_type_u8() *IRTypeInfo { return make_ir_type(IRType.U8) }
+fn ir_type_u16() *IRTypeInfo { return make_ir_type(IRType.U16) }
+fn ir_type_u32() *IRTypeInfo { return make_ir_type(IRType.U32) }
+fn ir_type_string() *IRTypeInfo { return make_ir_type(IRType.String) }
+// lower.cot - AST to IR lowering for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Transforms AST nodes into stack-based IR instructions.
+
+// ============================================================================
+// Lowering Context
+// ============================================================================
+
+struct Scope {
+    locals: *IRLocalList,
+    parent: *Scope,
+}
+
+fn scope_new(parent: *Scope) *Scope {
+    const s = @alloc(Scope, 1)
+    const locals = @alloc(IRLocalList, 1)
+    locals.* = irlocallist_new()
+    s.locals = locals
+    s.parent = parent
+    return s
+}
+
+fn scope_find_local(scope: *Scope, name: string) *IRLocal {
+    // Search current scope
+    for (i in 0..scope.locals.len) {
+        if (scope.locals.items[i].name == name) {
+            return scope.locals.items[i]
+        }
+    }
+    // Search parent scope
+    if (scope.parent != null) {
+        return scope_find_local(scope.parent, name)
+    }
+    return null
+}
+
+struct Lowerer {
+    module: *IRModule,
+    current_func: *IRFunction,
+    current_scope: *Scope,
+    source: string,
+
+    // For break/continue
+    loop_break_label: u64,
+    loop_continue_label: u64,
+    in_loop: bool,
+
+    // Error state
+    had_error: bool,
+    error_msg: string,
+}
+
+fn lowerer_new(source: string) Lowerer {
+    return Lowerer{
+        .module = irmodule_new(),
+        .current_func = null,
+        .current_scope = null,
+        .source = source,
+        .loop_break_label = 0,
+        .loop_continue_label = 0,
+        .in_loop = false,
+        .had_error = false,
+        .error_msg = "",
+    }
+}
+
+fn lowerer_error(l: *Lowerer, msg: string) void {
+    if (not l.had_error) {
+        l.had_error = true
+        l.error_msg = msg
+    }
+}
+
+// ============================================================================
+// Type Resolution
+// ============================================================================
+
+fn lower_type(l: *Lowerer, type_node: *TypeNode) *IRTypeInfo {
+    if (type_node == null) {
+        return ir_type_void()
+    }
+
+    if (type_node.tag == TypeTag.Named) {
+        // Built-in types
+        if (type_node.name == "void") { return ir_type_void() }
+        if (type_node.name == "bool") { return ir_type_bool() }
+        if (type_node.name == "i64") { return ir_type_i64() }
+        if (type_node.name == "u64") { return ir_type_u64() }
+        if (type_node.name == "u8") { return ir_type_u8() }
+        if (type_node.name == "u16") { return ir_type_u16() }
+        if (type_node.name == "u32") { return ir_type_u32() }
+        if (type_node.name == "string") { return ir_type_string() }
+
+        // User-defined struct or enum
+        const st = irmodule_find_struct(l.module, type_node.name)
+        if (st != null) {
+            return st.type_info
+        }
+
+        const et = irmodule_find_enum(l.module, type_node.name)
+        if (et != null) {
+            return make_ir_type_named(IRType.Enum, type_node.name)
+        }
+
+        lowerer_error(l, "Unknown type")
+        return ir_type_void()
+    }
+
+    if (type_node.tag == TypeTag.Pointer) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_pointer(inner)
+    }
+
+    if (type_node.tag == TypeTag.Array) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_array(inner, type_node.array_size)
+    }
+
+    if (type_node.tag == TypeTag.Slice) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_slice(inner)
+    }
+
+    return ir_type_void()
+}
+
+// ============================================================================
+// Expression Lowering
+// ============================================================================
+
+fn lower_expr(l: *Lowerer, expr: *Expr) void {
+    if (l.had_error) { return }
+    if (expr == null) { return }
+
+    if (expr.tag == ExprTag.Integer) {
+        lower_integer(l, expr)
+    } else if (expr.tag == ExprTag.String) {
+        lower_string(l, expr)
+    } else if (expr.tag == ExprTag.Bool) {
+        lower_bool(l, expr)
+    } else if (expr.tag == ExprTag.Null) {
+        lower_null(l)
+    } else if (expr.tag == ExprTag.Identifier) {
+        lower_identifier(l, expr)
+    } else if (expr.tag == ExprTag.Binary) {
+        lower_binary(l, expr)
+    } else if (expr.tag == ExprTag.Unary) {
+        lower_unary(l, expr)
+    } else if (expr.tag == ExprTag.Call) {
+        lower_call(l, expr)
+    } else if (expr.tag == ExprTag.Index) {
+        lower_index(l, expr)
+    } else if (expr.tag == ExprTag.Field) {
+        lower_field(l, expr)
+    } else if (expr.tag == ExprTag.Deref) {
+        lower_deref(l, expr)
+    } else if (expr.tag == ExprTag.AddressOf) {
+        lower_address_of(l, expr)
+    } else if (expr.tag == ExprTag.StructInit) {
+        lower_struct_init(l, expr)
+    } else if (expr.tag == ExprTag.ArrayInit) {
+        lower_array_init(l, expr)
+    } else {
+        lowerer_error(l, "Unknown expression type")
+    }
+}
+
+fn lower_integer(l: *Lowerer, expr: *Expr) void {
+    const inst = make_inst_i64(IROp.ConstInt, expr.int_value)
+    inst.result_type = ir_type_i64()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_string(l: *Lowerer, expr: *Expr) void {
+    const str_index = irmodule_add_string(l.module, expr.str_value)
+    const inst = make_inst_u64(IROp.ConstString, str_index)
+    inst.result_type = ir_type_string()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_bool(l: *Lowerer, expr: *Expr) void {
+    const inst = make_inst_bool(IROp.ConstBool, expr.bool_value)
+    inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_null(l: *Lowerer) void {
+    const inst = make_inst(IROp.ConstNull)
+    inst.result_type = make_ir_type_pointer(ir_type_void())
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_identifier(l: *Lowerer, expr: *Expr) void {
+    const name = expr.ident_name
+
+    // Check local variables first
+    const local = scope_find_local(l.current_scope, name)
+    if (local != null) {
+        const inst = make_inst_u64(IROp.LoadLocal, local.index)
+        inst.result_type = local.type
+        irfunction_emit(l.current_func, inst)
+        return
+    }
+
+    // Check globals
+    for (i in 0..l.module.globals.len) {
+        if (l.module.globals.items[i].name == name) {
+            const global = l.module.globals.items[i]
+            const inst = make_inst_u64(IROp.LoadGlobal, global.index)
+            inst.result_type = global.type
+            irfunction_emit(l.current_func, inst)
+            return
+        }
+    }
+
+    // Check if it's an enum variant (EnumName.Variant)
+    // This would be handled by field access, not bare identifier
+
+    lowerer_error(l, "Unknown identifier")
+}
+
+fn lower_binary(l: *Lowerer, expr: *Expr) void {
+    // Short-circuit evaluation for 'and' and 'or'
+    if (expr.binary_op == TokenType.KwAnd) {
+        lower_short_circuit_and(l, expr)
+        return
+    }
+    if (expr.binary_op == TokenType.KwOr) {
+        lower_short_circuit_or(l, expr)
+        return
+    }
+
+    // Regular binary operations
+    lower_expr(l, expr.binary_left)
+    lower_expr(l, expr.binary_right)
+
+    var op = IROp.Add
+    if (expr.binary_op == TokenType.Plus) { op = IROp.Add }
+    else if (expr.binary_op == TokenType.Minus) { op = IROp.Sub }
+    else if (expr.binary_op == TokenType.Star) { op = IROp.Mul }
+    else if (expr.binary_op == TokenType.Slash) { op = IROp.Div }
+    else if (expr.binary_op == TokenType.Percent) { op = IROp.Mod }
+    else if (expr.binary_op == TokenType.EqualEqual) { op = IROp.Eq }
+    else if (expr.binary_op == TokenType.BangEqual) { op = IROp.Ne }
+    else if (expr.binary_op == TokenType.Less) { op = IROp.Lt }
+    else if (expr.binary_op == TokenType.LessEqual) { op = IROp.Le }
+    else if (expr.binary_op == TokenType.Greater) { op = IROp.Gt }
+    else if (expr.binary_op == TokenType.GreaterEqual) { op = IROp.Ge }
+    else {
+        lowerer_error(l, "Unknown binary operator")
+        return
+    }
+
+    const inst = make_inst(op)
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_short_circuit_and(l: *Lowerer, expr: *Expr) void {
+    // if left is false, result is false (don't eval right)
+    // left && right:
+    //   eval left
+    //   jump_if_not end_label
+    //   eval right
+    //   jump done_label
+    // end_label:
+    //   push false
+    // done_label:
+
+    const end_label = irfunction_new_label(l.current_func)
+    const done_label = irfunction_new_label(l.current_func)
+
+    lower_expr(l, expr.binary_left)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+
+    lower_expr(l, expr.binary_right)
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, done_label))
+
+    // end_label: push false
+    const end_inst = make_inst_label(IROp.Jump, 0)  // Label marker
+    end_inst.target_label = end_label
+    end_inst.op = IROp.ConstBool  // Repurpose as label target
+    // Note: This is a simplification - in real impl we'd need proper label handling
+
+    const false_inst = make_inst_bool(IROp.ConstBool, false)
+    false_inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, false_inst)
+
+    // done_label marker would go here
+}
+
+fn lower_short_circuit_or(l: *Lowerer, expr: *Expr) void {
+    // if left is true, result is true (don't eval right)
+    const end_label = irfunction_new_label(l.current_func)
+    const done_label = irfunction_new_label(l.current_func)
+
+    lower_expr(l, expr.binary_left)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIf, end_label))
+
+    lower_expr(l, expr.binary_right)
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, done_label))
+
+    const true_inst = make_inst_bool(IROp.ConstBool, true)
+    true_inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, true_inst)
+}
+
+fn lower_unary(l: *Lowerer, expr: *Expr) void {
+    lower_expr(l, expr.unary_operand)
+
+    if (expr.unary_op == TokenType.Minus) {
+        irfunction_emit(l.current_func, make_inst(IROp.Neg))
+    } else if (expr.unary_op == TokenType.KwNot) {
+        irfunction_emit(l.current_func, make_inst(IROp.Not))
+    } else {
+        lowerer_error(l, "Unknown unary operator")
+    }
+}
+
+fn lower_call(l: *Lowerer, expr: *Expr) void {
+    // Push arguments
+    if (expr.call_args != null) {
+        for (i in 0..expr.call_args.len) {
+            lower_expr(l, expr.call_args.items[i])
+        }
+    }
+
+    // Get function name
+    if (expr.call_callee.tag != ExprTag.Identifier) {
+        lowerer_error(l, "Only direct function calls supported")
+        return
+    }
+
+    const func_name = expr.call_callee.ident_name
+    var arg_count: u64 = 0
+    if (expr.call_args != null) {
+        arg_count = expr.call_args.len
+    }
+
+    const inst = make_inst_str(IROp.Call, func_name)
+    inst.operand_u64 = arg_count
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_index(l: *Lowerer, expr: *Expr) void {
+    // base[index] -> get pointer to element, then load
+    lower_expr(l, expr.index_base)
+    lower_expr(l, expr.index_index)
+    irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_field(l: *Lowerer, expr: *Expr) void {
+    // Check if it's an enum variant access (EnumName.Variant)
+    if (expr.field_base.tag == ExprTag.Identifier) {
+        const base_name = expr.field_base.ident_name
+        const et = irmodule_find_enum(l.module, base_name)
+        if (et != null) {
+            // Find variant index
+            for (i in 0..et.variants.len) {
+                if (et.variants.items[i] == expr.field_name) {
+                    const inst = make_inst_u64(IROp.ConstInt, i)
+                    inst.result_type = make_ir_type_named(IRType.Enum, base_name)
+                    irfunction_emit(l.current_func, inst)
+                    return
+                }
+            }
+            lowerer_error(l, "Unknown enum variant")
+            return
+        }
+    }
+
+    // Regular field access
+    lower_expr(l, expr.field_base)
+    const inst = make_inst_str(IROp.GetFieldPtr, expr.field_name)
+    irfunction_emit(l.current_func, inst)
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_deref(l: *Lowerer, expr: *Expr) void {
+    lower_expr(l, expr.deref_operand)
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_address_of(l: *Lowerer, expr: *Expr) void {
+    // &variable -> get address of local
+    if (expr.addressof_operand.tag == ExprTag.Identifier) {
+        const name = expr.addressof_operand.ident_name
+        const local = scope_find_local(l.current_scope, name)
+        if (local != null) {
+            const inst = make_inst_u64(IROp.AddressOf, local.index)
+            inst.result_type = make_ir_type_pointer(local.type)
+            irfunction_emit(l.current_func, inst)
+            return
+        }
+    }
+
+    lowerer_error(l, "Can only take address of variables")
+}
+
+fn lower_struct_init(l: *Lowerer, expr: *Expr) void {
+    const type_name = expr.struct_type_name
+    const st = irmodule_find_struct(l.module, type_name)
+    if (st == null) {
+        lowerer_error(l, "Unknown struct type")
+        return
+    }
+
+    // Allocate struct
+    const alloc_inst = make_inst_str(IROp.AllocStruct, type_name)
+    alloc_inst.result_type = st.type_info
+    irfunction_emit(l.current_func, alloc_inst)
+
+    // Initialize fields
+    if (expr.struct_fields != null) {
+        for (i in 0..expr.struct_fields.len) {
+            const field_init = expr.struct_fields.items[i]
+
+            // Duplicate struct pointer (for field store)
+            // In a real impl we'd need a Dup instruction
+
+            // Get field pointer
+            const field_inst = make_inst_str(IROp.GetFieldPtr, field_init.name)
+            irfunction_emit(l.current_func, field_inst)
+
+            // Evaluate value
+            lower_expr(l, field_init.value)
+
+            // Store
+            irfunction_emit(l.current_func, make_inst(IROp.Store))
+        }
+    }
+}
+
+fn lower_array_init(l: *Lowerer, expr: *Expr) void {
+    var count: u64 = 0
+    if (expr.array_elements != null) {
+        count = expr.array_elements.len
+    }
+
+    // Allocate array
+    const alloc_inst = make_inst_u64(IROp.AllocArray, count)
+    irfunction_emit(l.current_func, alloc_inst)
+
+    // Initialize elements
+    if (expr.array_elements != null) {
+        for (i in 0..expr.array_elements.len) {
+            // Get element pointer
+            const idx_inst = make_inst_u64(IROp.ConstInt, i)
+            irfunction_emit(l.current_func, idx_inst)
+            irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+
+            // Evaluate value
+            lower_expr(l, expr.array_elements.items[i])
+
+            // Store
+            irfunction_emit(l.current_func, make_inst(IROp.Store))
+        }
+    }
+}
+
+// ============================================================================
+// Statement Lowering
+// ============================================================================
+
+fn lower_stmt(l: *Lowerer, stmt: *Stmt) void {
+    if (l.had_error) { return }
+    if (stmt == null) { return }
+
+    if (stmt.tag == StmtTag.VarDecl) {
+        lower_var_decl(l, stmt, false)
+    } else if (stmt.tag == StmtTag.ConstDecl) {
+        lower_var_decl(l, stmt, true)
+    } else if (stmt.tag == StmtTag.Assignment) {
+        lower_assignment(l, stmt)
+    } else if (stmt.tag == StmtTag.If) {
+        lower_if(l, stmt)
+    } else if (stmt.tag == StmtTag.While) {
+        lower_while(l, stmt)
+    } else if (stmt.tag == StmtTag.For) {
+        lower_for(l, stmt)
+    } else if (stmt.tag == StmtTag.ForRange) {
+        lower_for_range(l, stmt)
+    } else if (stmt.tag == StmtTag.Return) {
+        lower_return(l, stmt)
+    } else if (stmt.tag == StmtTag.Break) {
+        lower_break(l)
+    } else if (stmt.tag == StmtTag.Continue) {
+        lower_continue(l)
+    } else if (stmt.tag == StmtTag.Block) {
+        lower_block(l, stmt)
+    } else if (stmt.tag == StmtTag.ExprStmt) {
+        lower_expr_stmt(l, stmt)
+    } else if (stmt.tag == StmtTag.FnDecl) {
+        // Function declarations are handled in first pass
+    } else if (stmt.tag == StmtTag.StructDecl) {
+        // Struct declarations are handled in first pass
+    } else if (stmt.tag == StmtTag.EnumDecl) {
+        // Enum declarations are handled in first pass
+    } else {
+        lowerer_error(l, "Unknown statement type")
+    }
+}
+
+fn lower_var_decl(l: *Lowerer, stmt: *Stmt, is_const: bool) void {
+    const name = stmt.decl_name
+    const type_info = lower_type(l, stmt.decl_type)
+
+    // Add local variable
+    const index = irfunction_add_local(l.current_func, name, type_info)
+
+    // Also add to scope
+    const local = @alloc(IRLocal, 1)
+    local.name = name
+    local.type = type_info
+    local.index = index
+    irlocallist_push(l.current_scope.locals, local)
+
+    // Initialize if there's an initializer
+    if (stmt.decl_init != null) {
+        lower_expr(l, stmt.decl_init)
+        const store_inst = make_inst_u64(IROp.StoreLocal, index)
+        irfunction_emit(l.current_func, store_inst)
+    }
+}
+
+fn lower_assignment(l: *Lowerer, stmt: *Stmt) void {
+    const target = stmt.assign_target
+
+    if (target.tag == ExprTag.Identifier) {
+        // Simple variable assignment
+        const name = target.ident_name
+        const local = scope_find_local(l.current_scope, name)
+        if (local != null) {
+            lower_expr(l, stmt.assign_value)
+            const store_inst = make_inst_u64(IROp.StoreLocal, local.index)
+            irfunction_emit(l.current_func, store_inst)
+            return
+        }
+
+        // Check globals
+        for (i in 0..l.module.globals.len) {
+            if (l.module.globals.items[i].name == name) {
+                lower_expr(l, stmt.assign_value)
+                const store_inst = make_inst_u64(IROp.StoreGlobal, l.module.globals.items[i].index)
+                irfunction_emit(l.current_func, store_inst)
+                return
+            }
+        }
+
+        lowerer_error(l, "Unknown variable in assignment")
+    } else if (target.tag == ExprTag.Index) {
+        // array[index] = value
+        lower_expr(l, target.index_base)
+        lower_expr(l, target.index_index)
+        irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else if (target.tag == ExprTag.Field) {
+        // obj.field = value
+        lower_expr(l, target.field_base)
+        const field_inst = make_inst_str(IROp.GetFieldPtr, target.field_name)
+        irfunction_emit(l.current_func, field_inst)
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else if (target.tag == ExprTag.Deref) {
+        // ptr.* = value
+        lower_expr(l, target.deref_operand)
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else {
+        lowerer_error(l, "Invalid assignment target")
+    }
+}
+
+fn lower_if(l: *Lowerer, stmt: *Stmt) void {
+    const else_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+
+    // Condition
+    lower_expr(l, stmt.if_condition)
+
+    if (stmt.if_else != null) {
+        irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, else_label))
+    } else {
+        irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+    }
+
+    // Then branch
+    lower_stmt(l, stmt.if_then)
+
+    if (stmt.if_else != null) {
+        irfunction_emit(l.current_func, make_inst_label(IROp.Jump, end_label))
+        // else_label would be here
+        lower_stmt(l, stmt.if_else)
+    }
+
+    // end_label would be here
+}
+
+fn lower_while(l: *Lowerer, stmt: *Stmt) void {
+    const loop_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+
+    // Save loop context
+    const prev_break = l.loop_break_label
+    const prev_continue = l.loop_continue_label
+    const prev_in_loop = l.in_loop
+
+    l.loop_break_label = end_label
+    l.loop_continue_label = loop_label
+    l.in_loop = true
+
+    // loop_label:
+    //   eval condition
+    //   jump_if_not end_label
+    //   body
+    //   jump loop_label
+    // end_label:
+
+    lower_expr(l, stmt.while_condition)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+
+    lower_stmt(l, stmt.while_body)
+
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, loop_label))
+
+    // Restore loop context
+    l.loop_break_label = prev_break
+    l.loop_continue_label = prev_continue
+    l.in_loop = prev_in_loop
+}
+
+fn lower_for(l: *Lowerer, stmt: *Stmt) void {
+    // for item in collection { body }
+    // This requires iterator protocol - simplify to error for now
+    lowerer_error(l, "For-in loops not yet implemented")
+}
+
+fn lower_for_range(l: *Lowerer, stmt: *Stmt) void {
+    // for i in start..end { body }
+    const loop_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+    const continue_label = irfunction_new_label(l.current_func)
+
+    // Save loop context
+    const prev_break = l.loop_break_label
+    const prev_continue = l.loop_continue_label
+    const prev_in_loop = l.in_loop
+
+    l.loop_break_label = end_label
+    l.loop_continue_label = continue_label
+    l.in_loop = true
+
+    // Create loop variable
+    const var_index = irfunction_add_local(l.current_func, stmt.forrange_var_name, ir_type_i64())
+    const local = @alloc(IRLocal, 1)
+    local.name = stmt.forrange_var_name
+    local.type = ir_type_i64()
+    local.index = var_index
+    irlocallist_push(l.current_scope.locals, local)
+
+    // Initialize: i = start
+    lower_expr(l, stmt.forrange_start)
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, var_index))
+
+    // Store end value in a temp
+    const end_index = irfunction_add_local(l.current_func, "__end", ir_type_i64())
+    lower_expr(l, stmt.forrange_end)
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, end_index))
+
+    // loop_label:
+    //   if i >= end, jump end_label
+    //   body
+    // continue_label:
+    //   i = i + 1
+    //   jump loop_label
+    // end_label:
+
+    // Condition check
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, var_index))
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, end_index))
+    irfunction_emit(l.current_func, make_inst(IROp.Ge))
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIf, end_label))
+
+    // Body
+    lower_stmt(l, stmt.forrange_body)
+
+    // continue_label: increment
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, var_index))
+    irfunction_emit(l.current_func, make_inst_i64(IROp.ConstInt, 1))
+    irfunction_emit(l.current_func, make_inst(IROp.Add))
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, var_index))
+
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, loop_label))
+
+    // Restore loop context
+    l.loop_break_label = prev_break
+    l.loop_continue_label = prev_continue
+    l.in_loop = prev_in_loop
+}
+
+fn lower_return(l: *Lowerer, stmt: *Stmt) void {
+    if (stmt.return_value != null) {
+        lower_expr(l, stmt.return_value)
+    }
+    irfunction_emit(l.current_func, make_inst(IROp.Return))
+}
+
+fn lower_break(l: *Lowerer) void {
+    if (not l.in_loop) {
+        lowerer_error(l, "Break outside loop")
+        return
+    }
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, l.loop_break_label))
+}
+
+fn lower_continue(l: *Lowerer) void {
+    if (not l.in_loop) {
+        lowerer_error(l, "Continue outside loop")
+        return
+    }
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, l.loop_continue_label))
+}
+
+fn lower_block(l: *Lowerer, stmt: *Stmt) void {
+    // Create new scope
+    const prev_scope = l.current_scope
+    l.current_scope = scope_new(prev_scope)
+
+    if (stmt.block_stmts != null) {
+        for (i in 0..stmt.block_stmts.len) {
+            lower_stmt(l, stmt.block_stmts.items[i])
+        }
+    }
+
+    // Restore scope
+    l.current_scope = prev_scope
+}
+
+fn lower_expr_stmt(l: *Lowerer, stmt: *Stmt) void {
+    lower_expr(l, stmt.expr_stmt)
+    // Pop result if expression produces a value
+    // In a real impl we'd track this
+}
+
+// ============================================================================
+// Declaration Collection (First Pass)
+// ============================================================================
+
+fn collect_declarations(l: *Lowerer, ast: *AST) void {
+    if (ast.statements == null) { return }
+
+    for (i in 0..ast.statements.len) {
+        const stmt = ast.statements.items[i]
+
+        if (stmt.tag == StmtTag.StructDecl) {
+            collect_struct_decl(l, stmt)
+        } else if (stmt.tag == StmtTag.EnumDecl) {
+            collect_enum_decl(l, stmt)
+        } else if (stmt.tag == StmtTag.FnDecl) {
+            collect_fn_decl(l, stmt)
+        }
+    }
+}
+
+fn collect_struct_decl(l: *Lowerer, stmt: *Stmt) void {
+    const st = @alloc(IRStructType, 1)
+    st.name = stmt.struct_name
+
+    const type_info = @alloc(IRTypeInfo, 1)
+    type_info.tag = IRType.Struct
+    type_info.name = stmt.struct_name
+    type_info.inner = null
+    type_info.array_size = 0
+
+    const fields = @alloc(IRFieldList, 1)
+    fields.* = irfieldlist_new()
+    type_info.fields = fields
+    type_info.variants = null
+
+    // Add fields
+    if (stmt.struct_fields != null) {
+        var offset: u64 = 0
+        for (i in 0..stmt.struct_fields.len) {
+            const ast_field = stmt.struct_fields.items[i]
+            const field = @alloc(IRField, 1)
+            field.name = ast_field.name
+            field.type = lower_type(l, ast_field.type)
+            field.offset = offset
+            irfieldlist_push(fields, field)
+            offset = offset + 8  // Simplified: assume 8 bytes per field
+        }
+    }
+
+    st.type_info = type_info
+    irstructtypelist_push(l.module.structs, st)
+}
+
+fn collect_enum_decl(l: *Lowerer, stmt: *Stmt) void {
+    const et = @alloc(IREnumType, 1)
+    et.name = stmt.enum_name
+
+    const variants = @alloc(StringList, 1)
+    variants.* = stringlist_new()
+    et.variants = variants
+
+    if (stmt.enum_variants != null) {
+        for (i in 0..stmt.enum_variants.len) {
+            stringlist_push(variants, stmt.enum_variants.items[i])
+        }
+    }
+
+    irenumtypelist_push(l.module.enums, et)
+}
+
+fn collect_fn_decl(l: *Lowerer, stmt: *Stmt) void {
+    const func = irfunction_new(stmt.fn_name)
+
+    // Add parameters
+    if (stmt.fn_params != null) {
+        for (i in 0..stmt.fn_params.len) {
+            const ast_param = stmt.fn_params.items[i]
+            const param = @alloc(IRParam, 1)
+            param.name = ast_param.name
+            param.type = lower_type(l, ast_param.type)
+            irparamlist_push(func.params, param)
+        }
+    }
+
+    func.return_type = lower_type(l, stmt.fn_return_type)
+    irfunctionlist_push(l.module.functions, func)
+}
+
+// ============================================================================
+// Function Body Lowering (Second Pass)
+// ============================================================================
+
+fn lower_function_bodies(l: *Lowerer, ast: *AST) void {
+    if (ast.statements == null) { return }
+
+    for (i in 0..ast.statements.len) {
+        const stmt = ast.statements.items[i]
+
+        if (stmt.tag == StmtTag.FnDecl) {
+            lower_function_body(l, stmt)
+        }
+    }
+}
+
+fn lower_function_body(l: *Lowerer, stmt: *Stmt) void {
+    // Find the IR function
+    const func = irmodule_find_function(l.module, stmt.fn_name)
+    if (func == null) {
+        lowerer_error(l, "Function not found")
+        return
+    }
+
+    l.current_func = func
+
+    // Create scope with parameters as locals
+    l.current_scope = scope_new(null)
+
+    if (stmt.fn_params != null) {
+        for (i in 0..stmt.fn_params.len) {
+            const ast_param = stmt.fn_params.items[i]
+            const type_info = lower_type(l, ast_param.type)
+            const index = irfunction_add_local(func, ast_param.name, type_info)
+
+            const local = @alloc(IRLocal, 1)
+            local.name = ast_param.name
+            local.type = type_info
+            local.index = index
+            irlocallist_push(l.current_scope.locals, local)
+        }
+    }
+
+    // Lower function body
+    if (stmt.fn_body != null) {
+        lower_stmt(l, stmt.fn_body)
+    }
+
+    // Add implicit return for void functions
+    if (func.return_type.tag == IRType.Void) {
+        irfunction_emit(func, make_inst(IROp.Return))
+    }
+
+    l.current_func = null
+    l.current_scope = null
+}
+
+// ============================================================================
+// Main Lowering Entry Point
+// ============================================================================
+
+struct LowerResult {
+    module: *IRModule,
+    ok: bool,
+    error_msg: string,
+}
+
+fn lower(ast: *AST, source: string) LowerResult {
+    var l = lowerer_new(source)
+
+    // First pass: collect declarations
+    collect_declarations(&l, ast)
+
+    if (l.had_error) {
+        return LowerResult{
+            .module = l.module,
+            .ok = false,
+            .error_msg = l.error_msg,
+        }
+    }
+
+    // Second pass: lower function bodies
+    lower_function_bodies(&l, ast)
+
+    return LowerResult{
+        .module = l.module,
+        .ok = not l.had_error,
+        .error_msg = l.error_msg,
+    }
+}
+// emit.cot - IR to Bytecode emitter for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Generates Cot bytecode (.cbo files) from IR.
+// Uses a simple register allocation strategy.
+
+// ============================================================================
+// Bytecode Constants (from main Cot implementation)
+// ============================================================================
+
+// Magic number for .cbo files
+const MAGIC_0: u8 = 67   // 'C'
+const MAGIC_1: u8 = 66   // 'B'
+const MAGIC_2: u8 = 79   // 'O'
+const MAGIC_3: u8 = 49   // '1'
+
+const VERSION_MAJOR: u16 = 0
+const VERSION_MINOR: u16 = 1
+
+// Section types
+const SECTION_CONSTANTS: u32 = 1
+const SECTION_TYPES: u32 = 2
+const SECTION_ROUTINES: u32 = 3
+const SECTION_CODE: u32 = 4
+
+// Constant tags
+const CONST_INTEGER: u8 = 1
+const CONST_STRING: u8 = 3
+const CONST_BOOLEAN: u8 = 9
+
+// Opcodes
+const OP_NOP: u8 = 0x00
+const OP_HALT: u8 = 0x01
+const OP_MOV: u8 = 0x10
+const OP_MOVI: u8 = 0x11
+const OP_MOVI16: u8 = 0x12
+const OP_MOVI32: u8 = 0x13
+const OP_LOAD_CONST: u8 = 0x14
+const OP_LOAD_NULL: u8 = 0x15
+const OP_LOAD_TRUE: u8 = 0x16
+const OP_LOAD_FALSE: u8 = 0x17
+const OP_LOAD_LOCAL: u8 = 0x20
+const OP_STORE_LOCAL: u8 = 0x21
+const OP_LOAD_GLOBAL: u8 = 0x24
+const OP_STORE_GLOBAL: u8 = 0x25
+const OP_ADD: u8 = 0x30
+const OP_SUB: u8 = 0x31
+const OP_MUL: u8 = 0x32
+const OP_DIV: u8 = 0x33
+const OP_MOD: u8 = 0x34
+const OP_NEG: u8 = 0x35
+const OP_CMP_EQ: u8 = 0x40
+const OP_CMP_NE: u8 = 0x41
+const OP_CMP_LT: u8 = 0x42
+const OP_CMP_LE: u8 = 0x43
+const OP_CMP_GT: u8 = 0x44
+const OP_CMP_GE: u8 = 0x45
+const OP_LOG_AND: u8 = 0x50
+const OP_LOG_OR: u8 = 0x51
+const OP_LOG_NOT: u8 = 0x52
+const OP_JMP: u8 = 0x60
+const OP_JZ: u8 = 0x62
+const OP_JNZ: u8 = 0x63
+const OP_CALL: u8 = 0x70
+const OP_CALL_NATIVE: u8 = 0x72
+const OP_RET: u8 = 0x75
+const OP_RET_VAL: u8 = 0x76
+const OP_NEW_RECORD: u8 = 0x80
+const OP_LOAD_FIELD: u8 = 0x82
+const OP_STORE_FIELD: u8 = 0x83
+const OP_STR_CONCAT: u8 = 0x90
+
+// ============================================================================
+// Emitter State
+// ============================================================================
+
+struct Emitter {
+    module: *IRModule,
+    output: *ByteBuffer,
+
+    // Constant pool (indices map to output order)
+    const_int_indices: [256]i64,      // Integer values
+    const_int_map: [256]u64,          // Output index for each
+    const_int_count: u64,
+
+    const_str_indices: [256]string,   // String values
+    const_str_map: [256]u64,          // Output index for each
+    const_str_count: u64,
+
+    // Routine information
+    routine_offsets: [64]u32,         // Code offset for each routine
+    routine_count: u64,
+
+    // Current function being emitted
+    current_func_idx: u64,
+
+    // Register allocation (simple: track stack depth)
+    reg_stack: u8,   // Current "stack pointer" for register allocation
+
+    // Label resolution
+    label_positions: [256]u32,        // Position where label is defined
+    label_references: [256]u32,       // Position where label is referenced
+    label_ref_targets: [256]u64,      // Which label each reference refers to
+    label_ref_count: u64,
+
+    // Error state
+    had_error: bool,
+    error_msg: string,
+}
+
+fn emitter_new(module: *IRModule) Emitter {
+    const buf = @alloc(ByteBuffer, 1)
+    buf.* = bytebuffer_new()
+
+    var e = Emitter{
+        .module = module,
+        .output = buf,
+        .const_int_indices = @zeroinit([256]i64),
+        .const_int_map = @zeroinit([256]u64),
+        .const_int_count = 0,
+        .const_str_indices = @zeroinit([256]string),
+        .const_str_map = @zeroinit([256]u64),
+        .const_str_count = 0,
+        .routine_offsets = @zeroinit([64]u32),
+        .routine_count = 0,
+        .current_func_idx = 0,
+        .reg_stack = 0,
+        .label_positions = @zeroinit([256]u32),
+        .label_references = @zeroinit([256]u32),
+        .label_ref_targets = @zeroinit([256]u64),
+        .label_ref_count = 0,
+        .had_error = false,
+        .error_msg = "",
+    }
+
+    return e
+}
+
+fn emitter_error(e: *Emitter, msg: string) void {
+    if (not e.had_error) {
+        e.had_error = true
+        e.error_msg = msg
+    }
+}
+
+// ============================================================================
+// Register Allocation (Simple Stack-Based)
+// ============================================================================
+
+fn emit_push_reg(e: *Emitter) u8 {
+    const r = e.reg_stack
+    if (e.reg_stack < 15) {
+        e.reg_stack = e.reg_stack + 1
+    }
+    return r
+}
+
+fn emit_pop_reg(e: *Emitter) u8 {
+    if (e.reg_stack > 0) {
+        e.reg_stack = e.reg_stack - 1
+    }
+    return e.reg_stack
+}
+
+fn emit_peek_reg(e: *Emitter) u8 {
+    if (e.reg_stack > 0) {
+        return e.reg_stack - 1
+    }
+    return 0
+}
+
+// ============================================================================
+// Constant Pool
+// ============================================================================
+
+fn emit_add_int_const(e: *Emitter, value: i64) u64 {
+    // Check if already exists
+    for (i in 0..e.const_int_count) {
+        if (e.const_int_indices[i] == value) {
+            return e.const_int_map[i]
+        }
+    }
+
+    // Add new
+    const idx = e.const_int_count + e.const_str_count
+    e.const_int_indices[e.const_int_count] = value
+    e.const_int_map[e.const_int_count] = idx
+    e.const_int_count = e.const_int_count + 1
+    return idx
+}
+
+fn emit_add_str_const(e: *Emitter, value: string) u64 {
+    // Check if already exists
+    for (i in 0..e.const_str_count) {
+        if (e.const_str_indices[i] == value) {
+            return e.const_str_map[i]
+        }
+    }
+
+    // Add new
+    const idx = e.const_int_count + e.const_str_count
+    e.const_str_indices[e.const_str_count] = value
+    e.const_str_map[e.const_str_count] = idx
+    e.const_str_count = e.const_str_count + 1
+    return idx
+}
+
+// ============================================================================
+// Bytecode Writing Helpers
+// ============================================================================
+
+fn emit_byte(e: *Emitter, b: u8) void {
+    bytebuffer_write_byte(e.output, b)
+}
+
+fn emit_u16(e: *Emitter, v: u16) void {
+    // Little endian
+    emit_byte(e, (v % 256) as u8)
+    emit_byte(e, (v / 256) as u8)
+}
+
+fn emit_u32(e: *Emitter, v: u32) void {
+    // Little endian
+    emit_byte(e, ((v >> 0) % 256) as u8)
+    emit_byte(e, ((v >> 8) % 256) as u8)
+    emit_byte(e, ((v >> 16) % 256) as u8)
+    emit_byte(e, ((v >> 24) % 256) as u8)
+}
+
+fn emit_i64(e: *Emitter, v: i64) void {
+    // Little endian
+    var uv = v as u64
+    for (i in 0..8) {
+        emit_byte(e, (uv % 256) as u8)
+        uv = uv / 256
+    }
+}
+
+fn emit_current_pos(e: *Emitter) u32 {
+    return e.output.len as u32
+}
+
+// ============================================================================
+// Instruction Emission
+// ============================================================================
+
+// Format: [opcode:8] [rd:4|rs:4] [operand:8]
+fn emit_op_2reg(e: *Emitter, op: u8, rd: u8, rs: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, ((rd % 16) * 16) + (rs % 16))
+    emit_byte(e, 0)
+}
+
+// Format: [opcode:8] [rd:4|rs1:4] [rs2:4|0:4]
+fn emit_op_3reg(e: *Emitter, op: u8, rd: u8, rs1: u8, rs2: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, ((rd % 16) * 16) + (rs1 % 16))
+    emit_byte(e, (rs2 % 16) * 16)
+}
+
+// Format: [opcode:8] [rd:4|0:4] [imm8:8]
+fn emit_op_reg_imm8(e: *Emitter, op: u8, rd: u8, imm: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, imm)
+}
+
+// Format: [opcode:8] [rd:4|0:4] [imm16:16]
+fn emit_op_reg_imm16(e: *Emitter, op: u8, rd: u8, imm: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, (rd % 16) * 16)
+    emit_u16(e, imm)
+}
+
+// Format: [opcode:8] [0:8] [offset:16]
+fn emit_jump(e: *Emitter, op: u8, offset: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, 0)
+    emit_u16(e, offset)
+}
+
+// Format: [opcode:8] [rs:4|0:4] [offset:16]
+fn emit_cond_jump(e: *Emitter, op: u8, rs: u8, offset: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, (rs % 16) * 16)
+    emit_u16(e, offset)
+}
+
+// ============================================================================
+// IR Instruction Emission
+// ============================================================================
+
+fn emit_ir_instruction(e: *Emitter, inst: *IRInst) void {
+    if (e.had_error) { return }
+
+    if (inst.op == IROp.ConstInt) {
+        emit_ir_const_int(e, inst)
+    } else if (inst.op == IROp.ConstString) {
+        emit_ir_const_string(e, inst)
+    } else if (inst.op == IROp.ConstBool) {
+        emit_ir_const_bool(e, inst)
+    } else if (inst.op == IROp.ConstNull) {
+        emit_ir_const_null(e)
+    } else if (inst.op == IROp.LoadLocal) {
+        emit_ir_load_local(e, inst)
+    } else if (inst.op == IROp.StoreLocal) {
+        emit_ir_store_local(e, inst)
+    } else if (inst.op == IROp.LoadGlobal) {
+        emit_ir_load_global(e, inst)
+    } else if (inst.op == IROp.StoreGlobal) {
+        emit_ir_store_global(e, inst)
+    } else if (inst.op == IROp.Add) {
+        emit_ir_binary(e, OP_ADD)
+    } else if (inst.op == IROp.Sub) {
+        emit_ir_binary(e, OP_SUB)
+    } else if (inst.op == IROp.Mul) {
+        emit_ir_binary(e, OP_MUL)
+    } else if (inst.op == IROp.Div) {
+        emit_ir_binary(e, OP_DIV)
+    } else if (inst.op == IROp.Mod) {
+        emit_ir_binary(e, OP_MOD)
+    } else if (inst.op == IROp.Neg) {
+        emit_ir_unary(e, OP_NEG)
+    } else if (inst.op == IROp.Eq) {
+        emit_ir_binary(e, OP_CMP_EQ)
+    } else if (inst.op == IROp.Ne) {
+        emit_ir_binary(e, OP_CMP_NE)
+    } else if (inst.op == IROp.Lt) {
+        emit_ir_binary(e, OP_CMP_LT)
+    } else if (inst.op == IROp.Le) {
+        emit_ir_binary(e, OP_CMP_LE)
+    } else if (inst.op == IROp.Gt) {
+        emit_ir_binary(e, OP_CMP_GT)
+    } else if (inst.op == IROp.Ge) {
+        emit_ir_binary(e, OP_CMP_GE)
+    } else if (inst.op == IROp.And) {
+        emit_ir_binary(e, OP_LOG_AND)
+    } else if (inst.op == IROp.Or) {
+        emit_ir_binary(e, OP_LOG_OR)
+    } else if (inst.op == IROp.Not) {
+        emit_ir_unary(e, OP_LOG_NOT)
+    } else if (inst.op == IROp.Jump) {
+        emit_ir_jump(e, inst)
+    } else if (inst.op == IROp.JumpIf) {
+        emit_ir_jump_if(e, inst, true)
+    } else if (inst.op == IROp.JumpIfNot) {
+        emit_ir_jump_if(e, inst, false)
+    } else if (inst.op == IROp.Call) {
+        emit_ir_call(e, inst)
+    } else if (inst.op == IROp.Return) {
+        emit_ir_return(e)
+    } else {
+        // Other operations not yet implemented
+        emitter_error(e, "Unimplemented IR operation")
+    }
+}
+
+fn emit_ir_const_int(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const value = inst.operand_i64
+
+    // Use immediate if small enough
+    if (value >= -128 and value <= 127) {
+        emit_op_reg_imm8(e, OP_MOVI, rd, value as u8)
+    } else if (value >= -32768 and value <= 32767) {
+        emit_byte(e, OP_MOVI16)
+        emit_byte(e, (rd % 16) * 16)
+        emit_u16(e, value as u16)
+    } else {
+        // Use constant pool
+        const idx = emit_add_int_const(e, value)
+        emit_op_reg_imm16(e, OP_LOAD_CONST, rd, idx as u16)
+    }
+}
+
+fn emit_ir_const_string(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+
+    // Get string from module's string constants
+    var str_value = ""
+    if (inst.operand_u64 < e.module.string_constants.len) {
+        str_value = e.module.string_constants.items[inst.operand_u64]
+    }
+
+    const idx = emit_add_str_const(e, str_value)
+    emit_op_reg_imm16(e, OP_LOAD_CONST, rd, idx as u16)
+}
+
+fn emit_ir_const_bool(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    if (inst.operand_bool) {
+        emit_byte(e, OP_LOAD_TRUE)
+    } else {
+        emit_byte(e, OP_LOAD_FALSE)
+    }
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, 0)
+}
+
+fn emit_ir_const_null(e: *Emitter) void {
+    const rd = emit_push_reg(e)
+    emit_byte(e, OP_LOAD_NULL)
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, 0)
+}
+
+fn emit_ir_load_local(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const slot = inst.operand_u64
+    emit_op_reg_imm8(e, OP_LOAD_LOCAL, rd, slot as u8)
+}
+
+fn emit_ir_store_local(e: *Emitter, inst: *IRInst) void {
+    const rs = emit_pop_reg(e)
+    const slot = inst.operand_u64
+    emit_op_reg_imm8(e, OP_STORE_LOCAL, rs, slot as u8)
+}
+
+fn emit_ir_load_global(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const idx = inst.operand_u64
+    emit_op_reg_imm16(e, OP_LOAD_GLOBAL, rd, idx as u16)
+}
+
+fn emit_ir_store_global(e: *Emitter, inst: *IRInst) void {
+    const rs = emit_pop_reg(e)
+    const idx = inst.operand_u64
+    emit_op_reg_imm16(e, OP_STORE_GLOBAL, rs, idx as u16)
+}
+
+fn emit_ir_binary(e: *Emitter, op: u8) void {
+    const rs2 = emit_pop_reg(e)
+    const rs1 = emit_pop_reg(e)
+    const rd = emit_push_reg(e)
+    emit_op_3reg(e, op, rd, rs1, rs2)
+}
+
+fn emit_ir_unary(e: *Emitter, op: u8) void {
+    const rs = emit_pop_reg(e)
+    const rd = emit_push_reg(e)
+    emit_op_2reg(e, op, rd, rs)
+}
+
+fn emit_ir_jump(e: *Emitter, inst: *IRInst) void {
+    // Record reference for later patching
+    const ref_pos = emit_current_pos(e)
+    e.label_references[e.label_ref_count] = ref_pos
+    e.label_ref_targets[e.label_ref_count] = inst.target_label
+    e.label_ref_count = e.label_ref_count + 1
+
+    emit_jump(e, OP_JMP, 0)  // Placeholder offset
+}
+
+fn emit_ir_jump_if(e: *Emitter, inst: *IRInst, jump_if_true: bool) void {
+    const rs = emit_pop_reg(e)
+
+    // Record reference for later patching
+    const ref_pos = emit_current_pos(e)
+    e.label_references[e.label_ref_count] = ref_pos
+    e.label_ref_targets[e.label_ref_count] = inst.target_label
+    e.label_ref_count = e.label_ref_count + 1
+
+    if (jump_if_true) {
+        emit_cond_jump(e, OP_JNZ, rs, 0)
+    } else {
+        emit_cond_jump(e, OP_JZ, rs, 0)
+    }
+}
+
+fn emit_ir_call(e: *Emitter, inst: *IRInst) void {
+    const func_name = inst.operand_str
+    const argc = inst.operand_u64
+
+    // Find function index
+    var func_idx: u64 = 0
+    var found = false
+    for (i in 0..e.module.functions.len) {
+        if (e.module.functions.items[i].name == func_name) {
+            func_idx = i
+            found = true
+            break
+        }
+    }
+
+    if (not found) {
+        // Check if it's a native function
+        if (func_name == "print" or func_name == "println") {
+            // Call native
+            emit_byte(e, OP_CALL_NATIVE)
+            emit_byte(e, (argc as u8) * 16)
+            emit_u16(e, 0)  // Native index for print
+
+            // Adjust register stack for args consumed
+            for (i in 0..argc) {
+                emit_pop_reg(e)
+            }
+            return
+        }
+
+        emitter_error(e, "Unknown function")
+        return
+    }
+
+    // Emit call instruction
+    // Format: [argc:4|stack_argc:4] [routine_idx:16]
+    emit_byte(e, OP_CALL)
+    emit_byte(e, (argc as u8) * 16)  // argc in high nibble
+    emit_u16(e, func_idx as u16)
+
+    // Adjust register stack: pop args, push result
+    for (i in 0..argc) {
+        emit_pop_reg(e)
+    }
+    // Result goes in r15, but for simplicity push to track
+    emit_push_reg(e)
+}
+
+fn emit_ir_return(e: *Emitter) void {
+    if (e.reg_stack > 0) {
+        // Return with value
+        const rs = emit_peek_reg(e)
+        emit_byte(e, OP_RET_VAL)
+        emit_byte(e, (rs % 16) * 16)
+        emit_byte(e, 0)
+    } else {
+        // Return void
+        emit_byte(e, OP_RET)
+        emit_byte(e, 0)
+        emit_byte(e, 0)
+    }
+}
+
+// ============================================================================
+// Function Emission
+// ============================================================================
+
+fn emit_function(e: *Emitter, func: *IRFunction, func_idx: u64) void {
+    if (e.had_error) { return }
+
+    e.current_func_idx = func_idx
+    e.reg_stack = 0
+    e.label_ref_count = 0
+
+    // Clear label positions
+    for (i in 0..256) {
+        e.label_positions[i] = 0
+    }
+
+    // Record start offset
+    e.routine_offsets[func_idx] = emit_current_pos(e)
+
+    // Emit all instructions
+    for (i in 0..func.instructions.len) {
+        const inst = func.instructions.items[i]
+        emit_ir_instruction(e, inst)
+    }
+
+    // Patch jump targets
+    // Note: This is simplified - real impl would need proper label tracking
+}
+
+// ============================================================================
+// Module Emission
+// ============================================================================
+
+fn emit_module_header(e: *Emitter, entry_point: u32) void {
+    // Magic (4 bytes)
+    emit_byte(e, MAGIC_0)
+    emit_byte(e, MAGIC_1)
+    emit_byte(e, MAGIC_2)
+    emit_byte(e, MAGIC_3)
+
+    // Version (4 bytes)
+    emit_u16(e, VERSION_MAJOR)
+    emit_u16(e, VERSION_MINOR)
+
+    // Flags (4 bytes)
+    emit_u32(e, 0)
+
+    // Section count (4 bytes)
+    emit_u32(e, 4)  // constants, types, routines, code
+
+    // Entry point (4 bytes)
+    emit_u32(e, entry_point)
+
+    // Source hash (4 bytes)
+    emit_u32(e, 0)
+
+    // Reserved (8 bytes)
+    for (i in 0..8) {
+        emit_byte(e, 0)
+    }
+}
+
+fn emit_section_table(e: *Emitter, const_offset: u32, const_size: u32,
+                       types_offset: u32, types_size: u32,
+                       routines_offset: u32, routines_size: u32,
+                       code_offset: u32, code_size: u32) void {
+    // Constants section
+    emit_u32(e, SECTION_CONSTANTS)
+    emit_u32(e, const_offset)
+    emit_u32(e, const_size)
+    emit_u32(e, (e.const_int_count + e.const_str_count) as u32)
+
+    // Types section
+    emit_u32(e, SECTION_TYPES)
+    emit_u32(e, types_offset)
+    emit_u32(e, types_size)
+    emit_u32(e, e.module.structs.len as u32)
+
+    // Routines section
+    emit_u32(e, SECTION_ROUTINES)
+    emit_u32(e, routines_offset)
+    emit_u32(e, routines_size)
+    emit_u32(e, e.module.functions.len as u32)
+
+    // Code section
+    emit_u32(e, SECTION_CODE)
+    emit_u32(e, code_offset)
+    emit_u32(e, code_size)
+    emit_u32(e, 0)
+}
+
+fn emit_constants_section(e: *Emitter) void {
+    // Emit integer constants
+    for (i in 0..e.const_int_count) {
+        emit_byte(e, CONST_INTEGER)
+        emit_i64(e, e.const_int_indices[i])
+    }
+
+    // Emit string constants
+    for (i in 0..e.const_str_count) {
+        emit_byte(e, CONST_STRING)
+        const s = e.const_str_indices[i]
+        const len = str_len(s)
+        emit_u32(e, len as u32)
+        for (j in 0..len) {
+            emit_byte(e, str_char_at(s, j))
+        }
+    }
+}
+
+fn emit_types_section(e: *Emitter) void {
+    // Emit struct types
+    for (i in 0..e.module.structs.len) {
+        const st = e.module.structs.items[i]
+
+        // Type name
+        const name_len = str_len(st.name)
+        emit_u16(e, name_len as u16)
+        for (j in 0..name_len) {
+            emit_byte(e, str_char_at(st.name, j))
+        }
+
+        // Field count
+        var field_count: u64 = 0
+        if (st.type_info.fields != null) {
+            field_count = st.type_info.fields.len
+        }
+        emit_u16(e, field_count as u16)
+
+        // Fields
+        if (st.type_info.fields != null) {
+            for (j in 0..st.type_info.fields.len) {
+                const field = st.type_info.fields.items[j]
+
+                // Field name
+                const fname_len = str_len(field.name)
+                emit_u16(e, fname_len as u16)
+                for (k in 0..fname_len) {
+                    emit_byte(e, str_char_at(field.name, k))
+                }
+
+                // Field offset
+                emit_u16(e, field.offset as u16)
+
+                // Field type (simplified)
+                emit_byte(e, 7)  // int64 type code
+            }
+        }
+    }
+}
+
+fn emit_routines_section(e: *Emitter) void {
+    // Emit routine headers
+    for (i in 0..e.module.functions.len) {
+        const func = e.module.functions.items[i]
+
+        // Name
+        const name_len = str_len(func.name)
+        emit_u16(e, name_len as u16)
+        for (j in 0..name_len) {
+            emit_byte(e, str_char_at(func.name, j))
+        }
+
+        // Parameter count
+        emit_u16(e, func.params.len as u16)
+
+        // Local count
+        emit_u16(e, func.locals.len as u16)
+
+        // Code offset (will be patched)
+        emit_u32(e, e.routine_offsets[i])
+
+        // Flags
+        emit_u16(e, 0)
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+struct EmitResult {
+    bytecode: *ByteBuffer,
+    ok: bool,
+    error_msg: string,
+}
+
+fn emit(module: *IRModule) EmitResult {
+    var e = emitter_new(module)
+
+    // First pass: collect constants and emit code to temporary buffer
+    const code_buf = @alloc(ByteBuffer, 1)
+    code_buf.* = bytebuffer_new()
+    const orig_output = e.output
+    e.output = code_buf
+
+    // Emit all functions
+    for (i in 0..module.functions.len) {
+        emit_function(&e, module.functions.items[i], i)
+    }
+
+    if (e.had_error) {
+        return EmitResult{
+            .bytecode = e.output,
+            .ok = false,
+            .error_msg = e.error_msg,
+        }
+    }
+
+    // Second pass: build final bytecode with header and sections
+    e.output = orig_output
+
+    // Find entry point (main function)
+    var entry_point: u32 = 0xFFFFFFFF
+    for (i in 0..module.functions.len) {
+        if (module.functions.items[i].name == "main") {
+            entry_point = i as u32
+            break
+        }
+    }
+
+    // Reserve space for header (32 bytes) and section table (4 * 16 = 64 bytes)
+    const header_size: u32 = 32
+    const section_table_size: u32 = 64
+
+    // Calculate section offsets
+    const const_offset = header_size + section_table_size
+    var const_size: u32 = 0
+    for (i in 0..e.const_int_count) {
+        const_size = const_size + 9  // tag + i64
+    }
+    for (i in 0..e.const_str_count) {
+        const s = e.const_str_indices[i]
+        const_size = const_size + 5 + (str_len(s) as u32)  // tag + len + data
+    }
+
+    const types_offset = const_offset + const_size
+    var types_size: u32 = 0
+    // Simplified: just count bytes needed
+
+    const routines_offset = types_offset + types_size
+    var routines_size: u32 = 0
+    for (i in 0..module.functions.len) {
+        const func = module.functions.items[i]
+        routines_size = routines_size + 2 + (str_len(func.name) as u32)  // name
+        routines_size = routines_size + 2 + 2 + 4 + 2  // params, locals, offset, flags
+    }
+
+    const code_offset = routines_offset + routines_size
+    const code_size = code_buf.len as u32
+
+    // Emit header
+    emit_module_header(&e, entry_point)
+
+    // Emit section table
+    emit_section_table(&e, const_offset, const_size,
+                       types_offset, types_size,
+                       routines_offset, routines_size,
+                       code_offset, code_size)
+
+    // Emit constants
+    emit_constants_section(&e)
+
+    // Emit types
+    emit_types_section(&e)
+
+    // Emit routines
+    emit_routines_section(&e)
+
+    // Emit code
+    for (i in 0..code_buf.len) {
+        emit_byte(&e, code_buf.data[i])
+    }
+
+    return EmitResult{
+        .bytecode = e.output,
+        .ok = not e.had_error,
+        .error_msg = e.error_msg,
+    }
+}
+// main.cot - Entry point for Minimal Cot compiler
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Usage: cot run cot-minimal.cbo -- compile <source.cot> -o <output.cbo>
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+fn main() void {
+    // Get command line arguments
+    // process_args() returns a list: [program, arg1, arg2, ...]
+    const args = process_args()
+    const argc = len(args)
+
+    if (argc < 2) {
+        println("cot-minimal - Minimal Cot Compiler")
+        println("Usage: cot-minimal compile <source.cot> -o <output.cbo>")
+        return
+    }
+
+    // Parse command: compile <source> -o <output>
+    const command = args[1]
+
+    if (not str_equals(command, "compile")) {
+        println("Unknown command. Use 'compile'.")
+        return
+    }
+
+    if (argc < 3) {
+        println("Error: Missing source file")
+        return
+    }
+
+    const source_path = args[2]
+    var output_path = "out.cbo"
+
+    // Parse -o option
+    if (argc >= 5) {
+        if (str_equals(args[3], "-o")) {
+            output_path = args[4]
+        }
+    }
+
+    // Compile the source file
+    compile_file(source_path, output_path)
+}
+
+// ============================================================================
+// String comparison helper
+// ============================================================================
+
+fn str_equals(a: string, b: string) bool {
+    return a == b
+}
+
+// ============================================================================
+// Compilation Pipeline
+// ============================================================================
+
+fn compile_file(source_path: string, output_path: string) void {
+    print("Compiling: ")
+    println(source_path)
+
+    // Read source file
+    const source = read_file(source_path)
+    if (str_len(source) == 0) {
+        println("Error: Could not read source file or file is empty")
+        return
+    }
+
+    // Phase 1: Tokenize
+    print("  Tokenizing... ")
+    const tok_result = tokenize(source)
+    if (not tok_result.ok) {
+        println("FAILED")
+        print("  Lexer error: ")
+        println(tok_result.error_msg)
+        return
+    }
+    print_u64(tok_result.tokens.len)
+    println(" tokens")
+
+    // Phase 2: Parse
+    print("  Parsing... ")
+    const parse_result = parse(source, tok_result.tokens)
+    if (not parse_result.ok) {
+        println("FAILED")
+        print("  Parser error: ")
+        println(parse_result.error_msg)
+        return
+    }
+    print_u64(parse_result.ast.statements.len)
+    println(" statements")
+
+    // Phase 3: Lower to IR
+    print("  Lowering... ")
+    const lower_result = lower(&parse_result.ast, source)
+    if (not lower_result.ok) {
+        println("FAILED")
+        print("  Lower error: ")
+        println(lower_result.error_msg)
+        return
+    }
+    print_u64(lower_result.module.functions.len)
+    println(" functions")
+
+    // Phase 4: Emit bytecode
+    print("  Emitting... ")
+    const emit_result = emit(lower_result.module)
+    if (not emit_result.ok) {
+        println("FAILED")
+        print("  Emit error: ")
+        println(emit_result.error_msg)
+        return
+    }
+    print_u64(emit_result.bytecode.len)
+    println(" bytes")
+
+    // Phase 5: Write output file
+    print("  Writing: ")
+    println(output_path)
+
+    write_bytecode_file(output_path, emit_result.bytecode)
+
+    println("Done!")
+}
+
+// ============================================================================
+// Output helpers
+// ============================================================================
+
+fn print_u64(n: u64) void {
+    // Use built-in conversion
+    const s = int_to_string(n as i64)
+    print(s)
+}
+
+fn write_bytecode_file(path: string, buf: *ByteBuffer) void {
+    // Pass the buffer's data slice directly
+    // The write_bytes native function should handle slices
+    write_bytes(path, buf.data)
+}
