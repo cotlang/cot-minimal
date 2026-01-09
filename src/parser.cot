@@ -1,0 +1,975 @@
+// parser.cot - Parser for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Recursive descent parser with Pratt expression parsing
+
+// ============================================================================
+// Parser State
+// ============================================================================
+
+struct Parser {
+    source: string,
+    tokens: *TokenList,
+    current: u64,
+    had_error: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+// Parse result
+struct ParseResult {
+    ast: AST,
+    ok: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+fn parser_new(source: string, tokens: *TokenList) Parser {
+    return Parser{
+        .source = source,
+        .tokens = tokens,
+        .current = 0,
+        .had_error = false,
+        .error_msg = "",
+        .error_line = 0,
+        .error_col = 0,
+    }
+}
+
+// ============================================================================
+// Parser Helpers
+// ============================================================================
+
+fn parser_peek(p: *Parser) *Token {
+    return tokenlist_get(p.tokens, p.current)
+}
+
+fn parser_peek_type(p: *Parser) TokenType {
+    return parser_peek(p).type
+}
+
+fn parser_previous(p: *Parser) *Token {
+    return tokenlist_get(p.tokens, p.current - 1)
+}
+
+fn parser_is_at_end(p: *Parser) bool {
+    return parser_peek_type(p) == TokenType.Eof
+}
+
+fn parser_advance(p: *Parser) *Token {
+    if (not parser_is_at_end(p)) {
+        p.current = p.current + 1
+    }
+    return parser_previous(p)
+}
+
+fn parser_check(p: *Parser, type: TokenType) bool {
+    if (parser_is_at_end(p)) {
+        return false
+    }
+    return parser_peek_type(p) == type
+}
+
+fn parser_match(p: *Parser, type: TokenType) bool {
+    if (parser_check(p, type)) {
+        parser_advance(p)
+        return true
+    }
+    return false
+}
+
+fn parser_error(p: *Parser, msg: string) void {
+    if (p.had_error) {
+        return  // Only report first error
+    }
+    p.had_error = true
+    p.error_msg = msg
+    const tok = parser_peek(p)
+    p.error_line = tok.line
+    p.error_col = tok.column
+}
+
+fn parser_consume(p: *Parser, type: TokenType, msg: string) bool {
+    if (parser_check(p, type)) {
+        parser_advance(p)
+        return true
+    }
+    parser_error(p, msg)
+    return false
+}
+
+fn parser_current_loc(p: *Parser) SourceLoc {
+    const tok = parser_peek(p)
+    return SourceLoc{
+        .line = tok.line,
+        .column = tok.column,
+        .offset = tok.start,
+    }
+}
+
+fn parser_token_text(p: *Parser, tok: *Token) string {
+    return str_substring(p.source, tok.start, tok.start + tok.length)
+}
+
+// ============================================================================
+// Precedence for Pratt Parser
+// ============================================================================
+
+// Precedence levels (higher = binds tighter)
+const PREC_NONE: u64 = 0
+const PREC_ASSIGNMENT: u64 = 1
+const PREC_OR: u64 = 2
+const PREC_AND: u64 = 3
+const PREC_EQUALITY: u64 = 4
+const PREC_COMPARISON: u64 = 5
+const PREC_TERM: u64 = 6
+const PREC_FACTOR: u64 = 7
+const PREC_UNARY: u64 = 8
+const PREC_CALL: u64 = 9
+const PREC_PRIMARY: u64 = 10
+
+fn get_precedence(type: TokenType) u64 {
+    if (type == TokenType.KwOr) { return PREC_OR }
+    if (type == TokenType.KwAnd) { return PREC_AND }
+    if (type == TokenType.EqualEqual) { return PREC_EQUALITY }
+    if (type == TokenType.BangEqual) { return PREC_EQUALITY }
+    if (type == TokenType.Less) { return PREC_COMPARISON }
+    if (type == TokenType.LessEqual) { return PREC_COMPARISON }
+    if (type == TokenType.Greater) { return PREC_COMPARISON }
+    if (type == TokenType.GreaterEqual) { return PREC_COMPARISON }
+    if (type == TokenType.Plus) { return PREC_TERM }
+    if (type == TokenType.Minus) { return PREC_TERM }
+    if (type == TokenType.Star) { return PREC_FACTOR }
+    if (type == TokenType.Slash) { return PREC_FACTOR }
+    if (type == TokenType.Percent) { return PREC_FACTOR }
+    return PREC_NONE
+}
+
+fn is_binary_op(type: TokenType) bool {
+    return get_precedence(type) > PREC_NONE
+}
+
+// ============================================================================
+// Expression Parsing
+// ============================================================================
+
+fn parse_expression(p: *Parser) *Expr {
+    return parse_precedence(p, PREC_ASSIGNMENT)
+}
+
+fn parse_precedence(p: *Parser, min_prec: u64) *Expr {
+    var left = parse_unary(p)
+    if (p.had_error) { return left }
+
+    while (is_binary_op(parser_peek_type(p)) and get_precedence(parser_peek_type(p)) >= min_prec) {
+        const op_tok = parser_advance(p)
+        const op = op_tok.type
+        const prec = get_precedence(op)
+
+        // Parse right side with higher precedence (left-associative)
+        const right = parse_precedence(p, prec + 1)
+        if (p.had_error) { return left }
+
+        // Create binary expression
+        const bin = make_expr(ExprTag.Binary, left.loc)
+        bin.binary_op = op
+        bin.binary_left = left
+        bin.binary_right = right
+        left = bin
+    }
+
+    return left
+}
+
+fn parse_unary(p: *Parser) *Expr {
+    // Unary operators: not, -, &
+    if (parser_match(p, TokenType.KwNot)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.Unary, loc)
+        expr.unary_op = TokenType.KwNot
+        expr.unary_operand = operand
+        return expr
+    }
+
+    if (parser_match(p, TokenType.Minus)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.Unary, loc)
+        expr.unary_op = TokenType.Minus
+        expr.unary_operand = operand
+        return expr
+    }
+
+    if (parser_match(p, TokenType.Ampersand)) {
+        const loc = parser_current_loc(p)
+        const operand = parse_unary(p)
+        const expr = make_expr(ExprTag.AddressOf, loc)
+        expr.addressof_operand = operand
+        return expr
+    }
+
+    return parse_postfix(p)
+}
+
+fn parse_postfix(p: *Parser) *Expr {
+    var expr = parse_primary(p)
+    if (p.had_error) { return expr }
+
+    while (true) {
+        // Function call: expr(args)
+        if (parser_match(p, TokenType.LParen)) {
+            expr = parse_call(p, expr)
+            if (p.had_error) { return expr }
+        }
+        // Array index: expr[index]
+        else if (parser_match(p, TokenType.LBracket)) {
+            const loc = parser_current_loc(p)
+            const index = parse_expression(p)
+            if (not parser_consume(p, TokenType.RBracket, "Expected ']' after index")) {
+                return expr
+            }
+            const idx_expr = make_expr(ExprTag.Index, loc)
+            idx_expr.index_base = expr
+            idx_expr.index_index = index
+            expr = idx_expr
+        }
+        // Field access: expr.field or expr.*
+        else if (parser_match(p, TokenType.Dot)) {
+            const loc = parser_current_loc(p)
+            if (parser_match(p, TokenType.Star)) {
+                // Dereference: expr.*
+                const deref = make_expr(ExprTag.Deref, loc)
+                deref.deref_operand = expr
+                expr = deref
+            } else {
+                // Field access: expr.field
+                if (not parser_check(p, TokenType.Identifier)) {
+                    parser_error(p, "Expected field name after '.'")
+                    return expr
+                }
+                const name_tok = parser_advance(p)
+                const field = make_expr(ExprTag.Field, loc)
+                field.field_base = expr
+                field.field_name = parser_token_text(p, name_tok)
+                expr = field
+            }
+        }
+        // Deref shorthand: expr.*
+        else if (parser_match(p, TokenType.DotStar)) {
+            const loc = parser_current_loc(p)
+            const deref = make_expr(ExprTag.Deref, loc)
+            deref.deref_operand = expr
+            expr = deref
+        }
+        else {
+            break
+        }
+    }
+
+    return expr
+}
+
+fn parse_call(p: *Parser, callee: *Expr) *Expr {
+    const loc = callee.loc
+    const args = @alloc(ExprList, 1)
+    args.* = exprlist_new()
+
+    if (not parser_check(p, TokenType.RParen)) {
+        while (true) {
+            const arg = parse_expression(p)
+            if (p.had_error) { break }
+            exprlist_push(args, arg)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after arguments")) {
+        return callee
+    }
+
+    const call = make_expr(ExprTag.Call, loc)
+    call.call_callee = callee
+    call.call_args = args
+    return call
+}
+
+fn parse_primary(p: *Parser) *Expr {
+    const loc = parser_current_loc(p)
+
+    // Integer literal
+    if (parser_match(p, TokenType.Integer)) {
+        const tok = parser_previous(p)
+        const text = parser_token_text(p, tok)
+        const expr = make_expr(ExprTag.Integer, loc)
+        expr.int_value = parse_int(text)
+        return expr
+    }
+
+    // String literal
+    if (parser_match(p, TokenType.String)) {
+        const tok = parser_previous(p)
+        const text = parser_token_text(p, tok)
+        const expr = make_expr(ExprTag.String, loc)
+        // Remove quotes
+        expr.str_value = str_substring(text, 1, str_len(text) - 1)
+        return expr
+    }
+
+    // Boolean literals
+    if (parser_match(p, TokenType.KwTrue)) {
+        const expr = make_expr(ExprTag.Bool, loc)
+        expr.bool_value = true
+        return expr
+    }
+
+    if (parser_match(p, TokenType.KwFalse)) {
+        const expr = make_expr(ExprTag.Bool, loc)
+        expr.bool_value = false
+        return expr
+    }
+
+    // Null
+    if (parser_match(p, TokenType.KwNull)) {
+        return make_expr(ExprTag.Null, loc)
+    }
+
+    // Identifier or struct init
+    if (parser_match(p, TokenType.Identifier)) {
+        const tok = parser_previous(p)
+        const name = parser_token_text(p, tok)
+
+        // Check for struct initialization: Name{ ... }
+        if (parser_check(p, TokenType.LBrace)) {
+            return parse_struct_init(p, name, loc)
+        }
+
+        const expr = make_expr(ExprTag.Identifier, loc)
+        expr.ident_name = name
+        return expr
+    }
+
+    // Parenthesized expression
+    if (parser_match(p, TokenType.LParen)) {
+        const expr = parse_expression(p)
+        if (not parser_consume(p, TokenType.RParen, "Expected ')' after expression")) {
+            return expr
+        }
+        return expr
+    }
+
+    // Array initialization: [expr, expr, ...]
+    if (parser_match(p, TokenType.LBracket)) {
+        return parse_array_init(p, loc)
+    }
+
+    parser_error(p, "Expected expression")
+    return make_expr(ExprTag.Null, loc)
+}
+
+fn parse_struct_init(p: *Parser, type_name: string, loc: SourceLoc) *Expr {
+    parser_consume(p, TokenType.LBrace, "Expected '{' for struct initialization")
+
+    const fields = @alloc(FieldInitList, 1)
+    fields.* = fieldinitlist_new()
+
+    if (not parser_check(p, TokenType.RBrace)) {
+        while (true) {
+            // Expect .field = value
+            if (not parser_consume(p, TokenType.Dot, "Expected '.' before field name")) {
+                break
+            }
+            if (not parser_check(p, TokenType.Identifier)) {
+                parser_error(p, "Expected field name")
+                break
+            }
+            const name_tok = parser_advance(p)
+            const field_name = parser_token_text(p, name_tok)
+
+            if (not parser_consume(p, TokenType.Equal, "Expected '=' after field name")) {
+                break
+            }
+
+            const value = parse_expression(p)
+            if (p.had_error) { break }
+
+            const init = @alloc(FieldInit, 1)
+            init.name = field_name
+            init.value = value
+            fieldinitlist_push(fields, init)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after struct fields")
+
+    const expr = make_expr(ExprTag.StructInit, loc)
+    expr.struct_type_name = type_name
+    expr.struct_fields = fields
+    return expr
+}
+
+fn parse_array_init(p: *Parser, loc: SourceLoc) *Expr {
+    const elements = @alloc(ExprList, 1)
+    elements.* = exprlist_new()
+
+    if (not parser_check(p, TokenType.RBracket)) {
+        while (true) {
+            const elem = parse_expression(p)
+            if (p.had_error) { break }
+            exprlist_push(elements, elem)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    parser_consume(p, TokenType.RBracket, "Expected ']' after array elements")
+
+    const expr = make_expr(ExprTag.ArrayInit, loc)
+    expr.array_elements = elements
+    return expr
+}
+
+fn parse_int(text: string) i64 {
+    var result: i64 = 0
+    var i: u64 = 0
+    const len = str_len(text)
+
+    // Check for hex
+    if (len > 2 and str_char_at(text, 0) == 48) {
+        const x = str_char_at(text, 1)
+        if (x == 120 or x == 88) {
+            // Hex number
+            i = 2
+            while (i < len) {
+                const c = str_char_at(text, i)
+                result = result * 16
+                if (c >= 48 and c <= 57) {
+                    result = result + (c - 48)
+                } else if (c >= 65 and c <= 70) {
+                    result = result + (c - 55)
+                } else if (c >= 97 and c <= 102) {
+                    result = result + (c - 87)
+                }
+                i = i + 1
+            }
+            return result
+        }
+    }
+
+    // Decimal number
+    while (i < len) {
+        const c = str_char_at(text, i)
+        if (c >= 48 and c <= 57) {
+            result = result * 10 + (c - 48)
+        }
+        i = i + 1
+    }
+
+    return result
+}
+
+// ============================================================================
+// Type Parsing
+// ============================================================================
+
+fn parse_type(p: *Parser) *TypeNode {
+    const loc = parser_current_loc(p)
+
+    // Pointer type: *T
+    if (parser_match(p, TokenType.Star)) {
+        const inner = parse_type(p)
+        return make_type_pointer(inner, loc)
+    }
+
+    // Array or slice type: [N]T or []T
+    if (parser_match(p, TokenType.LBracket)) {
+        if (parser_match(p, TokenType.RBracket)) {
+            // Slice: []T
+            const inner = parse_type(p)
+            return make_type_slice(inner, loc)
+        } else {
+            // Array: [N]T
+            if (not parser_check(p, TokenType.Integer)) {
+                parser_error(p, "Expected array size")
+                return make_type_named("error", loc)
+            }
+            const size_tok = parser_advance(p)
+            const size = parse_int(parser_token_text(p, size_tok))
+
+            if (not parser_consume(p, TokenType.RBracket, "Expected ']' after array size")) {
+                return make_type_named("error", loc)
+            }
+
+            const inner = parse_type(p)
+            return make_type_array(inner, size, loc)
+        }
+    }
+
+    // Named type
+    if (parser_check(p, TokenType.Identifier)) {
+        const tok = parser_advance(p)
+        const name = parser_token_text(p, tok)
+        return make_type_named(name, loc)
+    }
+
+    parser_error(p, "Expected type")
+    return make_type_named("error", loc)
+}
+
+// ============================================================================
+// Statement Parsing
+// ============================================================================
+
+fn parse_statement(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    // Variable declaration: var name: Type = value
+    if (parser_match(p, TokenType.KwVar)) {
+        return parse_var_decl(p, false, loc)
+    }
+
+    // Constant declaration: const name = value
+    if (parser_match(p, TokenType.KwConst)) {
+        return parse_var_decl(p, true, loc)
+    }
+
+    // If statement
+    if (parser_match(p, TokenType.KwIf)) {
+        return parse_if(p, loc)
+    }
+
+    // While statement
+    if (parser_match(p, TokenType.KwWhile)) {
+        return parse_while(p, loc)
+    }
+
+    // For statement
+    if (parser_match(p, TokenType.KwFor)) {
+        return parse_for(p, loc)
+    }
+
+    // Return statement
+    if (parser_match(p, TokenType.KwReturn)) {
+        return parse_return(p, loc)
+    }
+
+    // Break statement
+    if (parser_match(p, TokenType.KwBreak)) {
+        return make_stmt(StmtTag.Break, loc)
+    }
+
+    // Continue statement
+    if (parser_match(p, TokenType.KwContinue)) {
+        return make_stmt(StmtTag.Continue, loc)
+    }
+
+    // Block
+    if (parser_check(p, TokenType.LBrace)) {
+        return parse_block(p)
+    }
+
+    // Expression statement or assignment
+    return parse_expr_or_assign(p, loc)
+}
+
+fn parse_var_decl(p: *Parser, is_const: bool, loc: SourceLoc) *Stmt {
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected variable name")
+        return make_stmt(StmtTag.VarDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    var type_node: *TypeNode = null
+    if (parser_match(p, TokenType.Colon)) {
+        type_node = parse_type(p)
+    }
+
+    var init_expr: *Expr = null
+    if (parser_match(p, TokenType.Equal)) {
+        init_expr = parse_expression(p)
+    }
+
+    var tag = StmtTag.VarDecl
+    if (is_const) {
+        tag = StmtTag.ConstDecl
+    }
+    const stmt = make_stmt(tag, loc)
+    stmt.decl_name = name
+    stmt.decl_type = type_node
+    stmt.decl_init = init_expr
+    return stmt
+}
+
+fn parse_if(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'if'")) {
+        return make_stmt(StmtTag.If, loc)
+    }
+    const condition = parse_expression(p)
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after condition")) {
+        return make_stmt(StmtTag.If, loc)
+    }
+
+    const then_branch = parse_block(p)
+
+    var else_branch: *Stmt = null
+    if (parser_match(p, TokenType.KwElse)) {
+        if (parser_check(p, TokenType.KwIf)) {
+            parser_advance(p)
+            else_branch = parse_if(p, parser_current_loc(p))
+        } else {
+            else_branch = parse_block(p)
+        }
+    }
+
+    const stmt = make_stmt(StmtTag.If, loc)
+    stmt.if_condition = condition
+    stmt.if_then = then_branch
+    stmt.if_else = else_branch
+    return stmt
+}
+
+fn parse_while(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'while'")) {
+        return make_stmt(StmtTag.While, loc)
+    }
+    const condition = parse_expression(p)
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after condition")) {
+        return make_stmt(StmtTag.While, loc)
+    }
+
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.While, loc)
+    stmt.while_condition = condition
+    stmt.while_body = body
+    return stmt
+}
+
+fn parse_for(p: *Parser, loc: SourceLoc) *Stmt {
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after 'for'")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected variable name in for loop")
+        return make_stmt(StmtTag.For, loc)
+    }
+    const var_tok = parser_advance(p)
+    const var_name = parser_token_text(p, var_tok)
+
+    if (not parser_consume(p, TokenType.KwIn, "Expected 'in' after variable name")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    const iter_expr = parse_expression(p)
+
+    // Check if it's a range: start..end
+    if (parser_match(p, TokenType.DotDot)) {
+        const end_expr = parse_expression(p)
+        if (not parser_consume(p, TokenType.RParen, "Expected ')' after range")) {
+            return make_stmt(StmtTag.ForRange, loc)
+        }
+
+        const body = parse_block(p)
+
+        const stmt = make_stmt(StmtTag.ForRange, loc)
+        stmt.forrange_var_name = var_name
+        stmt.forrange_start = iter_expr
+        stmt.forrange_end = end_expr
+        stmt.forrange_body = body
+        return stmt
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after iterable")) {
+        return make_stmt(StmtTag.For, loc)
+    }
+
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.For, loc)
+    stmt.for_var_name = var_name
+    stmt.for_iterable = iter_expr
+    stmt.for_body = body
+    return stmt
+}
+
+fn parse_return(p: *Parser, loc: SourceLoc) *Stmt {
+    const stmt = make_stmt(StmtTag.Return, loc)
+
+    // Check if there's a return value (not followed by } or EOF)
+    if (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        // Peek to see if next token could start an expression
+        const next = parser_peek_type(p)
+        if (next != TokenType.KwVar and next != TokenType.KwConst and
+            next != TokenType.KwIf and next != TokenType.KwWhile and
+            next != TokenType.KwFor and next != TokenType.KwReturn and
+            next != TokenType.KwBreak and next != TokenType.KwContinue and
+            next != TokenType.KwFn and next != TokenType.KwStruct and
+            next != TokenType.KwEnum) {
+            stmt.return_value = parse_expression(p)
+        }
+    }
+
+    return stmt
+}
+
+fn parse_block(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{'")) {
+        return make_stmt(StmtTag.Block, loc)
+    }
+
+    const stmts = @alloc(StmtList, 1)
+    stmts.* = stmtlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        const stmt = parse_statement(p)
+        if (p.had_error) { break }
+        stmtlist_push(stmts, stmt)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}'")
+
+    const block = make_stmt(StmtTag.Block, loc)
+    block.block_stmts = stmts
+    return block
+}
+
+fn parse_expr_or_assign(p: *Parser, loc: SourceLoc) *Stmt {
+    const expr = parse_expression(p)
+    if (p.had_error) {
+        return make_stmt(StmtTag.ExprStmt, loc)
+    }
+
+    // Check for assignment
+    if (parser_match(p, TokenType.Equal)) {
+        const value = parse_expression(p)
+        const stmt = make_stmt(StmtTag.Assignment, loc)
+        stmt.assign_target = expr
+        stmt.assign_value = value
+        return stmt
+    }
+
+    // Expression statement
+    const stmt = make_stmt(StmtTag.ExprStmt, loc)
+    stmt.expr_stmt = expr
+    return stmt
+}
+
+// ============================================================================
+// Top-Level Declarations
+// ============================================================================
+
+fn parse_fn_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected function name")
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    // Parameters
+    if (not parser_consume(p, TokenType.LParen, "Expected '(' after function name")) {
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+
+    const params = @alloc(ParamList, 1)
+    params.* = paramlist_new()
+
+    if (not parser_check(p, TokenType.RParen)) {
+        while (true) {
+            if (not parser_check(p, TokenType.Identifier)) {
+                parser_error(p, "Expected parameter name")
+                break
+            }
+            const param_name_tok = parser_advance(p)
+            const param_name = parser_token_text(p, param_name_tok)
+
+            if (not parser_consume(p, TokenType.Colon, "Expected ':' after parameter name")) {
+                break
+            }
+
+            const param_type = parse_type(p)
+
+            const param = @alloc(Param, 1)
+            param.name = param_name
+            param.type = param_type
+            paramlist_push(params, param)
+
+            if (not parser_match(p, TokenType.Comma)) {
+                break
+            }
+        }
+    }
+
+    if (not parser_consume(p, TokenType.RParen, "Expected ')' after parameters")) {
+        return make_stmt(StmtTag.FnDecl, loc)
+    }
+
+    // Return type
+    var return_type: *TypeNode = make_type_named("void", loc)
+    if (not parser_check(p, TokenType.LBrace)) {
+        return_type = parse_type(p)
+    }
+
+    // Body
+    const body = parse_block(p)
+
+    const stmt = make_stmt(StmtTag.FnDecl, loc)
+    stmt.fn_name = name
+    stmt.fn_params = params
+    stmt.fn_return_type = return_type
+    stmt.fn_body = body
+    return stmt
+}
+
+fn parse_struct_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected struct name")
+        return make_stmt(StmtTag.StructDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{' after struct name")) {
+        return make_stmt(StmtTag.StructDecl, loc)
+    }
+
+    const fields = @alloc(StructFieldList, 1)
+    fields.* = structfieldlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        if (not parser_check(p, TokenType.Identifier)) {
+            parser_error(p, "Expected field name")
+            break
+        }
+        const field_name_tok = parser_advance(p)
+        const field_name = parser_token_text(p, field_name_tok)
+
+        if (not parser_consume(p, TokenType.Colon, "Expected ':' after field name")) {
+            break
+        }
+
+        const field_type = parse_type(p)
+
+        const field = @alloc(StructField, 1)
+        field.name = field_name
+        field.type = field_type
+        structfieldlist_push(fields, field)
+
+        // Optional comma
+        parser_match(p, TokenType.Comma)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after struct fields")
+
+    const stmt = make_stmt(StmtTag.StructDecl, loc)
+    stmt.struct_name = name
+    stmt.struct_fields = fields
+    return stmt
+}
+
+fn parse_enum_decl(p: *Parser) *Stmt {
+    const loc = parser_current_loc(p)
+
+    if (not parser_check(p, TokenType.Identifier)) {
+        parser_error(p, "Expected enum name")
+        return make_stmt(StmtTag.EnumDecl, loc)
+    }
+    const name_tok = parser_advance(p)
+    const name = parser_token_text(p, name_tok)
+
+    if (not parser_consume(p, TokenType.LBrace, "Expected '{' after enum name")) {
+        return make_stmt(StmtTag.EnumDecl, loc)
+    }
+
+    const variants = @alloc(StringList, 1)
+    variants.* = stringlist_new()
+
+    while (not parser_check(p, TokenType.RBrace) and not parser_is_at_end(p)) {
+        if (not parser_check(p, TokenType.Identifier)) {
+            parser_error(p, "Expected variant name")
+            break
+        }
+        const variant_tok = parser_advance(p)
+        const variant_name = parser_token_text(p, variant_tok)
+        stringlist_push(variants, variant_name)
+
+        // Optional comma
+        parser_match(p, TokenType.Comma)
+    }
+
+    parser_consume(p, TokenType.RBrace, "Expected '}' after enum variants")
+
+    const stmt = make_stmt(StmtTag.EnumDecl, loc)
+    stmt.enum_name = name
+    stmt.enum_variants = variants
+    return stmt
+}
+
+fn parse_top_level(p: *Parser) *Stmt {
+    if (parser_match(p, TokenType.KwFn)) {
+        return parse_fn_decl(p)
+    }
+
+    if (parser_match(p, TokenType.KwStruct)) {
+        return parse_struct_decl(p)
+    }
+
+    if (parser_match(p, TokenType.KwEnum)) {
+        return parse_enum_decl(p)
+    }
+
+    // Top-level var/const
+    const loc = parser_current_loc(p)
+    if (parser_match(p, TokenType.KwVar)) {
+        return parse_var_decl(p, false, loc)
+    }
+    if (parser_match(p, TokenType.KwConst)) {
+        return parse_var_decl(p, true, loc)
+    }
+
+    parser_error(p, "Expected declaration")
+    return make_stmt(StmtTag.ExprStmt, loc)
+}
+
+// ============================================================================
+// Main Parse Function
+// ============================================================================
+
+fn parse(source: string, tokens: *TokenList) ParseResult {
+    var p = parser_new(source, tokens)
+    var ast = ast_new()
+
+    while (not parser_is_at_end(&p)) {
+        const stmt = parse_top_level(&p)
+        if (p.had_error) {
+            break
+        }
+        stmtlist_push(ast.statements, stmt)
+    }
+
+    return ParseResult{
+        .ast = ast,
+        .ok = not p.had_error,
+        .error_msg = p.error_msg,
+        .error_line = p.error_line,
+        .error_col = p.error_col,
+    }
+}
