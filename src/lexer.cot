@@ -1,0 +1,352 @@
+// lexer.cot - Tokenizer for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+
+// Lexer state
+struct Lexer {
+    source: string,
+    start: u64,
+    current: u64,
+    line: u64,
+    column: u64,
+    start_column: u64,
+}
+
+// Lexer result with token or error
+struct LexResult {
+    token: Token,
+    ok: bool,
+    error_msg: string,
+}
+
+fn lex_result_ok(tok: Token) LexResult {
+    return LexResult{
+        .token = tok,
+        .ok = true,
+        .error_msg = "",
+    }
+}
+
+fn lex_result_error(msg: string, line: u64, col: u64) LexResult {
+    return LexResult{
+        .token = token_new(TokenType.Error, 0, 0, line, col),
+        .ok = false,
+        .error_msg = msg,
+    }
+}
+
+// Create a new lexer
+fn lexer_new(source: string) Lexer {
+    return Lexer{
+        .source = source,
+        .start = 0,
+        .current = 0,
+        .line = 1,
+        .column = 1,
+        .start_column = 1,
+    }
+}
+
+// Check if at end of source
+fn lexer_is_at_end(lex: *Lexer) bool {
+    return lex.current >= str_len(lex.source)
+}
+
+// Peek current character without advancing
+fn lexer_peek(lex: *Lexer) u8 {
+    if (lexer_is_at_end(lex)) {
+        return 0
+    }
+    return str_char_at(lex.source, lex.current)
+}
+
+// Peek next character
+fn lexer_peek_next(lex: *Lexer) u8 {
+    if (lex.current + 1 >= str_len(lex.source)) {
+        return 0
+    }
+    return str_char_at(lex.source, lex.current + 1)
+}
+
+// Advance and return current character
+fn lexer_advance(lex: *Lexer) u8 {
+    const c = str_char_at(lex.source, lex.current)
+    lex.current = lex.current + 1
+    lex.column = lex.column + 1
+    return c
+}
+
+// Match expected character and advance if matches
+fn lexer_match(lex: *Lexer, expected: u8) bool {
+    if (lexer_is_at_end(lex)) {
+        return false
+    }
+    if (str_char_at(lex.source, lex.current) != expected) {
+        return false
+    }
+    lex.current = lex.current + 1
+    lex.column = lex.column + 1
+    return true
+}
+
+// Make a token with current span
+fn lexer_make_token(lex: *Lexer, type: TokenType) Token {
+    return token_new(
+        type,
+        lex.start,
+        lex.current - lex.start,
+        lex.line,
+        lex.start_column
+    )
+}
+
+// Skip whitespace and comments
+fn lexer_skip_whitespace(lex: *Lexer) void {
+    while (not lexer_is_at_end(lex)) {
+        const c = lexer_peek(lex)
+
+        if (c == 32 or c == 9 or c == 13) {
+            // Space, tab, or carriage return
+            lexer_advance(lex)
+        } else if (c == 10) {
+            // Newline
+            lex.line = lex.line + 1
+            lex.column = 0
+            lexer_advance(lex)
+        } else if (c == 47 and lexer_peek_next(lex) == 47) {
+            // Line comment: //
+            while (not lexer_is_at_end(lex) and lexer_peek(lex) != 10) {
+                lexer_advance(lex)
+            }
+        } else if (c == 47 and lexer_peek_next(lex) == 42) {
+            // Block comment: /* */
+            lexer_advance(lex)  // skip /
+            lexer_advance(lex)  // skip *
+            while (not lexer_is_at_end(lex)) {
+                if (lexer_peek(lex) == 42 and lexer_peek_next(lex) == 47) {
+                    lexer_advance(lex)  // skip *
+                    lexer_advance(lex)  // skip /
+                    break
+                }
+                if (lexer_peek(lex) == 10) {
+                    lex.line = lex.line + 1
+                    lex.column = 0
+                }
+                lexer_advance(lex)
+            }
+        } else {
+            return
+        }
+    }
+}
+
+// Scan a string literal
+fn lexer_string(lex: *Lexer) LexResult {
+    while (not lexer_is_at_end(lex) and lexer_peek(lex) != 34) {
+        if (lexer_peek(lex) == 10) {
+            lex.line = lex.line + 1
+            lex.column = 0
+        }
+        if (lexer_peek(lex) == 92) {
+            // Escape sequence - skip next char too
+            lexer_advance(lex)
+        }
+        lexer_advance(lex)
+    }
+
+    if (lexer_is_at_end(lex)) {
+        return lex_result_error("Unterminated string", lex.line, lex.start_column)
+    }
+
+    // Closing quote
+    lexer_advance(lex)
+    return lex_result_ok(lexer_make_token(lex, TokenType.String))
+}
+
+// Scan a number literal
+fn lexer_number(lex: *Lexer) LexResult {
+    while (is_digit(lexer_peek(lex))) {
+        lexer_advance(lex)
+    }
+
+    // Check for hex: 0x...
+    if (lex.current - lex.start == 1) {
+        const first = str_char_at(lex.source, lex.start)
+        if (first == 48 and (lexer_peek(lex) == 120 or lexer_peek(lex) == 88)) {
+            // 0x or 0X
+            lexer_advance(lex)  // skip x
+            while (is_hex_digit(lexer_peek(lex))) {
+                lexer_advance(lex)
+            }
+        }
+    }
+
+    return lex_result_ok(lexer_make_token(lex, TokenType.Integer))
+}
+
+fn is_hex_digit(c: u8) bool {
+    if (is_digit(c)) { return true }
+    if (c >= 65 and c <= 70) { return true }   // A-F
+    if (c >= 97 and c <= 102) { return true }  // a-f
+    return false
+}
+
+// Scan an identifier or keyword
+fn lexer_identifier(lex: *Lexer) LexResult {
+    while (is_alnum(lexer_peek(lex))) {
+        lexer_advance(lex)
+    }
+
+    // Get the text and check if it's a keyword
+    const text = str_substring(lex.source, lex.start, lex.current)
+    const type = keyword_lookup(text)
+
+    return lex_result_ok(lexer_make_token(lex, type))
+}
+
+// Scan the next token
+fn lexer_scan_token(lex: *Lexer) LexResult {
+    lexer_skip_whitespace(lex)
+
+    lex.start = lex.current
+    lex.start_column = lex.column
+
+    if (lexer_is_at_end(lex)) {
+        return lex_result_ok(lexer_make_token(lex, TokenType.Eof))
+    }
+
+    const c = lexer_advance(lex)
+
+    // Identifiers and keywords
+    if (is_alpha(c)) {
+        return lexer_identifier(lex)
+    }
+
+    // Numbers
+    if (is_digit(c)) {
+        return lexer_number(lex)
+    }
+
+    // Single-character tokens and multi-character operators
+    if (c == 40) { return lex_result_ok(lexer_make_token(lex, TokenType.LParen)) }
+    if (c == 41) { return lex_result_ok(lexer_make_token(lex, TokenType.RParen)) }
+    if (c == 123) { return lex_result_ok(lexer_make_token(lex, TokenType.LBrace)) }
+    if (c == 125) { return lex_result_ok(lexer_make_token(lex, TokenType.RBrace)) }
+    if (c == 91) { return lex_result_ok(lexer_make_token(lex, TokenType.LBracket)) }
+    if (c == 93) { return lex_result_ok(lexer_make_token(lex, TokenType.RBracket)) }
+    if (c == 44) { return lex_result_ok(lexer_make_token(lex, TokenType.Comma)) }
+    if (c == 58) { return lex_result_ok(lexer_make_token(lex, TokenType.Colon)) }
+    if (c == 59) { return lex_result_ok(lexer_make_token(lex, TokenType.Semicolon)) }
+    if (c == 43) { return lex_result_ok(lexer_make_token(lex, TokenType.Plus)) }
+    if (c == 42) { return lex_result_ok(lexer_make_token(lex, TokenType.Star)) }
+    if (c == 47) { return lex_result_ok(lexer_make_token(lex, TokenType.Slash)) }
+    if (c == 37) { return lex_result_ok(lexer_make_token(lex, TokenType.Percent)) }
+    if (c == 38) { return lex_result_ok(lexer_make_token(lex, TokenType.Ampersand)) }
+
+    // String literal
+    if (c == 34) {
+        return lexer_string(lex)
+    }
+
+    // Dot, .*, ..
+    if (c == 46) {
+        if (lexer_match(lex, 42)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.DotStar))
+        }
+        if (lexer_match(lex, 46)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.DotDot))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Dot))
+    }
+
+    // Minus, ->
+    if (c == 45) {
+        if (lexer_match(lex, 62)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.Arrow))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Minus))
+    }
+
+    // Equal, ==
+    if (c == 61) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.EqualEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Equal))
+    }
+
+    // Bang, !=
+    if (c == 33) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.BangEqual))
+        }
+        return lex_result_error("Unexpected character '!'", lex.line, lex.start_column)
+    }
+
+    // Less, <=
+    if (c == 60) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.LessEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Less))
+    }
+
+    // Greater, >=
+    if (c == 62) {
+        if (lexer_match(lex, 61)) {
+            return lex_result_ok(lexer_make_token(lex, TokenType.GreaterEqual))
+        }
+        return lex_result_ok(lexer_make_token(lex, TokenType.Greater))
+    }
+
+    return lex_result_error("Unexpected character", lex.line, lex.start_column)
+}
+
+// Tokenize entire source into list of tokens
+struct TokenizeResult {
+    tokens: TokenList,
+    ok: bool,
+    error_msg: string,
+    error_line: u64,
+    error_col: u64,
+}
+
+fn tokenize(source: string) TokenizeResult {
+    var lex = lexer_new(source)
+    var tokens = tokenlist_new()
+
+    while (true) {
+        const result = lexer_scan_token(&lex)
+
+        if (not result.ok) {
+            return TokenizeResult{
+                .tokens = tokens,
+                .ok = false,
+                .error_msg = result.error_msg,
+                .error_line = result.token.line,
+                .error_col = result.token.column,
+            }
+        }
+
+        // Allocate token on heap and add to list
+        const tok = @alloc(Token, 1)
+        tok.* = result.token
+        tokenlist_push(&tokens, tok)
+
+        if (result.token.type == TokenType.Eof) {
+            break
+        }
+    }
+
+    return TokenizeResult{
+        .tokens = tokens,
+        .ok = true,
+        .error_msg = "",
+        .error_line = 0,
+        .error_col = 0,
+    }
+}
+
+// Get the text of a token from source
+fn token_text(source: string, tok: *Token) string {
+    return str_substring(source, tok.start, tok.start + tok.length)
+}

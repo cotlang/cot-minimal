@@ -1,0 +1,535 @@
+// ast.cot - AST node types for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Since Minimal Cot doesn't have tagged unions with data,
+// we use structs with tag enums and pointer fields.
+
+// ============================================================================
+// Expression Tags
+// ============================================================================
+
+enum ExprTag {
+    Integer,
+    String,
+    Bool,
+    Null,
+    Identifier,
+    Binary,
+    Unary,
+    Call,
+    Index,
+    Field,
+    Deref,
+    AddressOf,
+    StructInit,
+    ArrayInit,
+}
+
+// ============================================================================
+// Statement Tags
+// ============================================================================
+
+enum StmtTag {
+    VarDecl,
+    ConstDecl,
+    Assignment,
+    If,
+    While,
+    For,
+    ForRange,
+    Return,
+    Break,
+    Continue,
+    Block,
+    ExprStmt,
+    FnDecl,
+    StructDecl,
+    EnumDecl,
+}
+
+// ============================================================================
+// Type Tags
+// ============================================================================
+
+enum TypeTag {
+    Named,      // i64, bool, string, CustomType
+    Pointer,    // *T
+    Array,      // [N]T
+    Slice,      // []T
+    Function,   // fn(args) ReturnType
+}
+
+// ============================================================================
+// Type Node
+// ============================================================================
+
+struct TypeNode {
+    tag: TypeTag,
+    name: string,           // For Named types
+    inner: *TypeNode,       // For Pointer, Array, Slice (element type)
+    array_size: u64,        // For Array (0 = slice)
+    params: *TypeNodeList,  // For Function (parameter types)
+    return_type: *TypeNode, // For Function
+    loc: SourceLoc,
+}
+
+struct TypeNodeList {
+    items: []*TypeNode,
+    len: u64,
+    cap: u64,
+}
+
+fn typenodelist_new() TypeNodeList {
+    return TypeNodeList{
+        .items = @alloc([]*TypeNode, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn typenodelist_push(list: *TypeNodeList, node: *TypeNode) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*TypeNode, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = node
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// Expression Node
+// ============================================================================
+
+struct Expr {
+    tag: ExprTag,
+    loc: SourceLoc,
+
+    // Integer literal
+    int_value: i64,
+
+    // String literal
+    str_value: string,
+
+    // Bool literal
+    bool_value: bool,
+
+    // Identifier
+    ident_name: string,
+
+    // Binary expression
+    binary_op: TokenType,
+    binary_left: *Expr,
+    binary_right: *Expr,
+
+    // Unary expression
+    unary_op: TokenType,
+    unary_operand: *Expr,
+
+    // Call expression
+    call_callee: *Expr,
+    call_args: *ExprList,
+
+    // Index expression (arr[i])
+    index_base: *Expr,
+    index_index: *Expr,
+
+    // Field access (obj.field)
+    field_base: *Expr,
+    field_name: string,
+
+    // Deref (ptr.*)
+    deref_operand: *Expr,
+
+    // AddressOf (&value)
+    addressof_operand: *Expr,
+
+    // Struct initialization
+    struct_type_name: string,
+    struct_fields: *FieldInitList,
+
+    // Array initialization
+    array_elements: *ExprList,
+}
+
+struct ExprList {
+    items: []*Expr,
+    len: u64,
+    cap: u64,
+}
+
+fn exprlist_new() ExprList {
+    return ExprList{
+        .items = @alloc([]*Expr, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn exprlist_push(list: *ExprList, expr: *Expr) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Expr, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = expr
+    list.len = list.len + 1
+}
+
+// Field initializer for struct init: .field = value
+struct FieldInit {
+    name: string,
+    value: *Expr,
+}
+
+struct FieldInitList {
+    items: []*FieldInit,
+    len: u64,
+    cap: u64,
+}
+
+fn fieldinitlist_new() FieldInitList {
+    return FieldInitList{
+        .items = @alloc([]*FieldInit, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn fieldinitlist_push(list: *FieldInitList, init: *FieldInit) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*FieldInit, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = init
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// Statement Node
+// ============================================================================
+
+struct Stmt {
+    tag: StmtTag,
+    loc: SourceLoc,
+
+    // VarDecl / ConstDecl
+    decl_name: string,
+    decl_type: *TypeNode,       // null if inferred
+    decl_init: *Expr,           // null if no initializer
+
+    // Assignment
+    assign_target: *Expr,
+    assign_value: *Expr,
+
+    // If statement
+    if_condition: *Expr,
+    if_then: *Stmt,             // Block
+    if_else: *Stmt,             // null or Block or another If
+
+    // While statement
+    while_condition: *Expr,
+    while_body: *Stmt,          // Block
+
+    // For-in statement (for item in collection)
+    for_var_name: string,
+    for_iterable: *Expr,
+    for_body: *Stmt,            // Block
+
+    // For-range statement (for i in 0..n)
+    forrange_var_name: string,
+    forrange_start: *Expr,
+    forrange_end: *Expr,
+    forrange_body: *Stmt,       // Block
+
+    // Return statement
+    return_value: *Expr,        // null for void return
+
+    // Block (list of statements)
+    block_stmts: *StmtList,
+
+    // ExprStmt (expression as statement)
+    expr_stmt: *Expr,
+
+    // FnDecl
+    fn_name: string,
+    fn_params: *ParamList,
+    fn_return_type: *TypeNode,
+    fn_body: *Stmt,             // Block
+
+    // StructDecl
+    struct_name: string,
+    struct_fields: *StructFieldList,
+
+    // EnumDecl
+    enum_name: string,
+    enum_variants: *StringList,
+}
+
+struct StmtList {
+    items: []*Stmt,
+    len: u64,
+    cap: u64,
+}
+
+fn stmtlist_new() StmtList {
+    return StmtList{
+        .items = @alloc([]*Stmt, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn stmtlist_push(list: *StmtList, stmt: *Stmt) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Stmt, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = stmt
+    list.len = list.len + 1
+}
+
+// Function parameter
+struct Param {
+    name: string,
+    type: *TypeNode,
+}
+
+struct ParamList {
+    items: []*Param,
+    len: u64,
+    cap: u64,
+}
+
+fn paramlist_new() ParamList {
+    return ParamList{
+        .items = @alloc([]*Param, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn paramlist_push(list: *ParamList, param: *Param) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*Param, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = param
+    list.len = list.len + 1
+}
+
+// Struct field declaration
+struct StructField {
+    name: string,
+    type: *TypeNode,
+}
+
+struct StructFieldList {
+    items: []*StructField,
+    len: u64,
+    cap: u64,
+}
+
+fn structfieldlist_new() StructFieldList {
+    return StructFieldList{
+        .items = @alloc([]*StructField, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn structfieldlist_push(list: *StructFieldList, field: *StructField) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*StructField, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = field
+    list.len = list.len + 1
+}
+
+// String list for enum variants
+struct StringList {
+    items: []string,
+    len: u64,
+    cap: u64,
+}
+
+fn stringlist_new() StringList {
+    return StringList{
+        .items = @alloc([]string, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn stringlist_push(list: *StringList, s: string) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]string, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = s
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// AST (Program) - top level
+// ============================================================================
+
+struct AST {
+    statements: *StmtList,
+}
+
+fn ast_new() AST {
+    const stmts = @alloc(StmtList, 1)
+    stmts.* = stmtlist_new()
+    return AST{
+        .statements = stmts,
+    }
+}
+
+// ============================================================================
+// AST Node Constructors
+// ============================================================================
+
+fn make_expr(tag: ExprTag, loc: SourceLoc) *Expr {
+    const expr = @alloc(Expr, 1)
+    expr.tag = tag
+    expr.loc = loc
+    expr.int_value = 0
+    expr.str_value = ""
+    expr.bool_value = false
+    expr.ident_name = ""
+    expr.binary_op = TokenType.Error
+    expr.binary_left = null
+    expr.binary_right = null
+    expr.unary_op = TokenType.Error
+    expr.unary_operand = null
+    expr.call_callee = null
+    expr.call_args = null
+    expr.index_base = null
+    expr.index_index = null
+    expr.field_base = null
+    expr.field_name = ""
+    expr.deref_operand = null
+    expr.addressof_operand = null
+    expr.struct_type_name = ""
+    expr.struct_fields = null
+    expr.array_elements = null
+    return expr
+}
+
+fn make_stmt(tag: StmtTag, loc: SourceLoc) *Stmt {
+    const stmt = @alloc(Stmt, 1)
+    stmt.tag = tag
+    stmt.loc = loc
+    stmt.decl_name = ""
+    stmt.decl_type = null
+    stmt.decl_init = null
+    stmt.assign_target = null
+    stmt.assign_value = null
+    stmt.if_condition = null
+    stmt.if_then = null
+    stmt.if_else = null
+    stmt.while_condition = null
+    stmt.while_body = null
+    stmt.for_var_name = ""
+    stmt.for_iterable = null
+    stmt.for_body = null
+    stmt.forrange_var_name = ""
+    stmt.forrange_start = null
+    stmt.forrange_end = null
+    stmt.forrange_body = null
+    stmt.return_value = null
+    stmt.block_stmts = null
+    stmt.expr_stmt = null
+    stmt.fn_name = ""
+    stmt.fn_params = null
+    stmt.fn_return_type = null
+    stmt.fn_body = null
+    stmt.struct_name = ""
+    stmt.struct_fields = null
+    stmt.enum_name = ""
+    stmt.enum_variants = null
+    return stmt
+}
+
+fn make_type_named(name: string, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Named
+    t.name = name
+    t.inner = null
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_pointer(inner: *TypeNode, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Pointer
+    t.name = ""
+    t.inner = inner
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_array(inner: *TypeNode, size: u64, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Array
+    t.name = ""
+    t.inner = inner
+    t.array_size = size
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
+
+fn make_type_slice(inner: *TypeNode, loc: SourceLoc) *TypeNode {
+    const t = @alloc(TypeNode, 1)
+    t.tag = TypeTag.Slice
+    t.name = ""
+    t.inner = inner
+    t.array_size = 0
+    t.params = null
+    t.return_type = null
+    t.loc = loc
+    return t
+}
