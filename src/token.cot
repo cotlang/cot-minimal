@@ -64,9 +64,9 @@ enum TokenType {
     Error,
 }
 
-// Token structure - holds type and position
+// Token structure - holds kind and position
 struct Token {
-    type: TokenType,
+    kind: TokenType,
     start: u64,
     length: u64,
     line: u64,
@@ -81,9 +81,9 @@ struct SourceLoc {
 }
 
 // Create a new token
-fn token_new(type: TokenType, start: u64, length: u64, line: u64, column: u64) Token {
+fn token_new(kind: TokenType, start: u64, length: u64, line: u64, column: u64) Token {
     return Token{
-        .type = type,
+        .kind = kind,
         .start = start,
         .length = length,
         .line = line,
@@ -91,27 +91,27 @@ fn token_new(type: TokenType, start: u64, length: u64, line: u64, column: u64) T
     }
 }
 
-// Check if token type is a keyword
-fn is_keyword(type: TokenType) bool {
-    if (type == TokenType.KwFn) { return true }
-    if (type == TokenType.KwVar) { return true }
-    if (type == TokenType.KwConst) { return true }
-    if (type == TokenType.KwIf) { return true }
-    if (type == TokenType.KwElse) { return true }
-    if (type == TokenType.KwWhile) { return true }
-    if (type == TokenType.KwFor) { return true }
-    if (type == TokenType.KwIn) { return true }
-    if (type == TokenType.KwReturn) { return true }
-    if (type == TokenType.KwBreak) { return true }
-    if (type == TokenType.KwContinue) { return true }
-    if (type == TokenType.KwStruct) { return true }
-    if (type == TokenType.KwEnum) { return true }
-    if (type == TokenType.KwAnd) { return true }
-    if (type == TokenType.KwOr) { return true }
-    if (type == TokenType.KwNot) { return true }
-    if (type == TokenType.KwTrue) { return true }
-    if (type == TokenType.KwFalse) { return true }
-    if (type == TokenType.KwNull) { return true }
+// Check if token kind is a keyword
+fn is_keyword(kind: TokenType) bool {
+    if (kind == TokenType.KwFn) { return true }
+    if (kind == TokenType.KwVar) { return true }
+    if (kind == TokenType.KwConst) { return true }
+    if (kind == TokenType.KwIf) { return true }
+    if (kind == TokenType.KwElse) { return true }
+    if (kind == TokenType.KwWhile) { return true }
+    if (kind == TokenType.KwFor) { return true }
+    if (kind == TokenType.KwIn) { return true }
+    if (kind == TokenType.KwReturn) { return true }
+    if (kind == TokenType.KwBreak) { return true }
+    if (kind == TokenType.KwContinue) { return true }
+    if (kind == TokenType.KwStruct) { return true }
+    if (kind == TokenType.KwEnum) { return true }
+    if (kind == TokenType.KwAnd) { return true }
+    if (kind == TokenType.KwOr) { return true }
+    if (kind == TokenType.KwNot) { return true }
+    if (kind == TokenType.KwTrue) { return true }
+    if (kind == TokenType.KwFalse) { return true }
+    if (kind == TokenType.KwNull) { return true }
     return false
 }
 
@@ -140,57 +140,57 @@ fn keyword_lookup(text: string) TokenType {
     return TokenType.Identifier
 }
 
-// Get string representation of token type (for debugging)
-fn token_type_name(type: TokenType) string {
-    if (type == TokenType.Integer) { return "Integer" }
-    if (type == TokenType.String) { return "String" }
-    if (type == TokenType.Identifier) { return "Identifier" }
-    if (type == TokenType.KwFn) { return "fn" }
-    if (type == TokenType.KwVar) { return "var" }
-    if (type == TokenType.KwConst) { return "const" }
-    if (type == TokenType.KwIf) { return "if" }
-    if (type == TokenType.KwElse) { return "else" }
-    if (type == TokenType.KwWhile) { return "while" }
-    if (type == TokenType.KwFor) { return "for" }
-    if (type == TokenType.KwIn) { return "in" }
-    if (type == TokenType.KwReturn) { return "return" }
-    if (type == TokenType.KwBreak) { return "break" }
-    if (type == TokenType.KwContinue) { return "continue" }
-    if (type == TokenType.KwStruct) { return "struct" }
-    if (type == TokenType.KwEnum) { return "enum" }
-    if (type == TokenType.KwAnd) { return "and" }
-    if (type == TokenType.KwOr) { return "or" }
-    if (type == TokenType.KwNot) { return "not" }
-    if (type == TokenType.KwTrue) { return "true" }
-    if (type == TokenType.KwFalse) { return "false" }
-    if (type == TokenType.KwNull) { return "null" }
-    if (type == TokenType.Plus) { return "+" }
-    if (type == TokenType.Minus) { return "-" }
-    if (type == TokenType.Star) { return "*" }
-    if (type == TokenType.Slash) { return "/" }
-    if (type == TokenType.Percent) { return "%" }
-    if (type == TokenType.Ampersand) { return "&" }
-    if (type == TokenType.Equal) { return "=" }
-    if (type == TokenType.EqualEqual) { return "==" }
-    if (type == TokenType.BangEqual) { return "!=" }
-    if (type == TokenType.Less) { return "<" }
-    if (type == TokenType.LessEqual) { return "<=" }
-    if (type == TokenType.Greater) { return ">" }
-    if (type == TokenType.GreaterEqual) { return ">=" }
-    if (type == TokenType.Dot) { return "." }
-    if (type == TokenType.DotStar) { return ".*" }
-    if (type == TokenType.DotDot) { return ".." }
-    if (type == TokenType.LParen) { return "(" }
-    if (type == TokenType.RParen) { return ")" }
-    if (type == TokenType.LBrace) { return "{" }
-    if (type == TokenType.RBrace) { return "}" }
-    if (type == TokenType.LBracket) { return "[" }
-    if (type == TokenType.RBracket) { return "]" }
-    if (type == TokenType.Comma) { return "," }
-    if (type == TokenType.Colon) { return ":" }
-    if (type == TokenType.Semicolon) { return ";" }
-    if (type == TokenType.Arrow) { return "->" }
-    if (type == TokenType.Eof) { return "EOF" }
-    if (type == TokenType.Error) { return "Error" }
+// Get string representation of token kind (for debugging)
+fn token_type_name(kind: TokenType) string {
+    if (kind == TokenType.Integer) { return "Integer" }
+    if (kind == TokenType.String) { return "String" }
+    if (kind == TokenType.Identifier) { return "Identifier" }
+    if (kind == TokenType.KwFn) { return "fn" }
+    if (kind == TokenType.KwVar) { return "var" }
+    if (kind == TokenType.KwConst) { return "const" }
+    if (kind == TokenType.KwIf) { return "if" }
+    if (kind == TokenType.KwElse) { return "else" }
+    if (kind == TokenType.KwWhile) { return "while" }
+    if (kind == TokenType.KwFor) { return "for" }
+    if (kind == TokenType.KwIn) { return "in" }
+    if (kind == TokenType.KwReturn) { return "return" }
+    if (kind == TokenType.KwBreak) { return "break" }
+    if (kind == TokenType.KwContinue) { return "continue" }
+    if (kind == TokenType.KwStruct) { return "struct" }
+    if (kind == TokenType.KwEnum) { return "enum" }
+    if (kind == TokenType.KwAnd) { return "and" }
+    if (kind == TokenType.KwOr) { return "or" }
+    if (kind == TokenType.KwNot) { return "not" }
+    if (kind == TokenType.KwTrue) { return "true" }
+    if (kind == TokenType.KwFalse) { return "false" }
+    if (kind == TokenType.KwNull) { return "null" }
+    if (kind == TokenType.Plus) { return "+" }
+    if (kind == TokenType.Minus) { return "-" }
+    if (kind == TokenType.Star) { return "*" }
+    if (kind == TokenType.Slash) { return "/" }
+    if (kind == TokenType.Percent) { return "%" }
+    if (kind == TokenType.Ampersand) { return "&" }
+    if (kind == TokenType.Equal) { return "=" }
+    if (kind == TokenType.EqualEqual) { return "==" }
+    if (kind == TokenType.BangEqual) { return "!=" }
+    if (kind == TokenType.Less) { return "<" }
+    if (kind == TokenType.LessEqual) { return "<=" }
+    if (kind == TokenType.Greater) { return ">" }
+    if (kind == TokenType.GreaterEqual) { return ">=" }
+    if (kind == TokenType.Dot) { return "." }
+    if (kind == TokenType.DotStar) { return ".*" }
+    if (kind == TokenType.DotDot) { return ".." }
+    if (kind == TokenType.LParen) { return "(" }
+    if (kind == TokenType.RParen) { return ")" }
+    if (kind == TokenType.LBrace) { return "{" }
+    if (kind == TokenType.RBrace) { return "}" }
+    if (kind == TokenType.LBracket) { return "[" }
+    if (kind == TokenType.RBracket) { return "]" }
+    if (kind == TokenType.Comma) { return "," }
+    if (kind == TokenType.Colon) { return ":" }
+    if (kind == TokenType.Semicolon) { return ";" }
+    if (kind == TokenType.Arrow) { return "->" }
+    if (kind == TokenType.Eof) { return "EOF" }
+    if (kind == TokenType.Error) { return "Error" }
     return "Unknown"
 }
