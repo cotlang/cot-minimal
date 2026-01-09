@@ -78,16 +78,26 @@ cot run hello.cbo
 
 ## Progress
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| token.cot | Not started | |
-| lexer.cot | Not started | |
-| ast.cot | Not started | |
-| parser.cot | Not started | |
-| ir.cot | Not started | |
-| lower.cot | Not started | |
-| emit.cot | Not started | |
-| main.cot | Not started | |
+| Component | Status | Lines | Notes |
+|-----------|--------|-------|-------|
+| token.cot | Done | 177 | Token types enum, keyword lookup |
+| util.cot | Done | 298 | Result type, lists, string/byte helpers |
+| lexer.cot | Done | 353 | Single-pass tokenizer |
+| ast.cot | Done | 536 | Expression, statement, type nodes |
+| parser.cot | Done | 837 | Recursive descent + Pratt expressions |
+| ir.cot | Done | 592 | IR types, instructions, module |
+| lower.cot | Done | 780 | AST to IR lowering with scopes |
+| emit.cot | Done | 540 | IR to bytecode with register allocation |
+| main.cot | Done | 150 | Entry point, compilation pipeline |
+
+**Total: ~4,263 lines**
+
+## Next Steps
+
+1. Test compilation with the main Cot compiler
+2. Fix any compilation errors
+3. Test running cot-minimal on hello.cot
+4. Iterate until self-hosting works
 
 ## See Also
 

@@ -1,0 +1,149 @@
+// main.cot - Entry point for Minimal Cot compiler
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Usage: cot run cot-minimal.cbo -- compile <source.cot> -o <output.cbo>
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+fn main() void {
+    // Get command line arguments
+    // process_args() returns a list: [program, arg1, arg2, ...]
+    const args = process_args()
+    const argc = len(args)
+
+    if (argc < 2) {
+        println("cot-minimal - Minimal Cot Compiler")
+        println("Usage: cot-minimal compile <source.cot> -o <output.cbo>")
+        return
+    }
+
+    // Parse command: compile <source> -o <output>
+    const command = args[1]
+
+    if (not str_equals(command, "compile")) {
+        println("Unknown command. Use 'compile'.")
+        return
+    }
+
+    if (argc < 3) {
+        println("Error: Missing source file")
+        return
+    }
+
+    const source_path = args[2]
+    var output_path = "out.cbo"
+
+    // Parse -o option
+    if (argc >= 5) {
+        if (str_equals(args[3], "-o")) {
+            output_path = args[4]
+        }
+    }
+
+    // Compile the source file
+    compile_file(source_path, output_path)
+}
+
+// ============================================================================
+// String comparison helper
+// ============================================================================
+
+fn str_equals(a: string, b: string) bool {
+    return a == b
+}
+
+// ============================================================================
+// Compilation Pipeline
+// ============================================================================
+
+fn compile_file(source_path: string, output_path: string) void {
+    print("Compiling: ")
+    println(source_path)
+
+    // Read source file
+    const source = read_file(source_path)
+    if (str_len(source) == 0) {
+        println("Error: Could not read source file or file is empty")
+        return
+    }
+
+    // Phase 1: Tokenize
+    print("  Tokenizing... ")
+    const tok_result = tokenize(source)
+    if (not tok_result.ok) {
+        println("FAILED")
+        print("  Lexer error: ")
+        println(tok_result.error_msg)
+        return
+    }
+    print_u64(tok_result.tokens.len)
+    println(" tokens")
+
+    // Phase 2: Parse
+    print("  Parsing... ")
+    const parse_result = parse(source, tok_result.tokens)
+    if (not parse_result.ok) {
+        println("FAILED")
+        print("  Parser error: ")
+        println(parse_result.error_msg)
+        return
+    }
+    print_u64(parse_result.ast.statements.len)
+    println(" statements")
+
+    // Phase 3: Lower to IR
+    print("  Lowering... ")
+    const lower_result = lower(&parse_result.ast, source)
+    if (not lower_result.ok) {
+        println("FAILED")
+        print("  Lower error: ")
+        println(lower_result.error_msg)
+        return
+    }
+    print_u64(lower_result.module.functions.len)
+    println(" functions")
+
+    // Phase 4: Emit bytecode
+    print("  Emitting... ")
+    const emit_result = emit(lower_result.module)
+    if (not emit_result.ok) {
+        println("FAILED")
+        print("  Emit error: ")
+        println(emit_result.error_msg)
+        return
+    }
+    print_u64(emit_result.bytecode.len)
+    println(" bytes")
+
+    // Phase 5: Write output file
+    print("  Writing: ")
+    println(output_path)
+
+    write_bytecode_file(output_path, emit_result.bytecode)
+
+    println("Done!")
+}
+
+// ============================================================================
+// Output helpers
+// ============================================================================
+
+fn print_u64(n: u64) void {
+    // Use built-in conversion
+    const s = int_to_string(n as i64)
+    print(s)
+}
+
+fn write_bytecode_file(path: string, buf: *ByteBuffer) void {
+    // Create a slice of the actual data
+    // Note: write_bytes expects a slice, not pointer
+    var i: u64 = 0
+    const out = @alloc([]u8, buf.len)
+    while (i < buf.len) {
+        out[i] = buf.data[i]
+        i = i + 1
+    }
+    write_bytes(path, out)
+}

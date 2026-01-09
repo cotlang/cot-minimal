@@ -1,0 +1,812 @@
+// emit.cot - IR to Bytecode emitter for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Generates Cot bytecode (.cbo files) from IR.
+// Uses a simple register allocation strategy.
+
+// ============================================================================
+// Bytecode Constants (from main Cot implementation)
+// ============================================================================
+
+// Magic number for .cbo files
+const MAGIC_0: u8 = 67   // 'C'
+const MAGIC_1: u8 = 66   // 'B'
+const MAGIC_2: u8 = 79   // 'O'
+const MAGIC_3: u8 = 49   // '1'
+
+const VERSION_MAJOR: u16 = 0
+const VERSION_MINOR: u16 = 1
+
+// Section types
+const SECTION_CONSTANTS: u32 = 1
+const SECTION_TYPES: u32 = 2
+const SECTION_ROUTINES: u32 = 3
+const SECTION_CODE: u32 = 4
+
+// Constant tags
+const CONST_INTEGER: u8 = 1
+const CONST_STRING: u8 = 3
+const CONST_BOOLEAN: u8 = 9
+
+// Opcodes
+const OP_NOP: u8 = 0x00
+const OP_HALT: u8 = 0x01
+const OP_MOV: u8 = 0x10
+const OP_MOVI: u8 = 0x11
+const OP_MOVI16: u8 = 0x12
+const OP_MOVI32: u8 = 0x13
+const OP_LOAD_CONST: u8 = 0x14
+const OP_LOAD_NULL: u8 = 0x15
+const OP_LOAD_TRUE: u8 = 0x16
+const OP_LOAD_FALSE: u8 = 0x17
+const OP_LOAD_LOCAL: u8 = 0x20
+const OP_STORE_LOCAL: u8 = 0x21
+const OP_LOAD_GLOBAL: u8 = 0x24
+const OP_STORE_GLOBAL: u8 = 0x25
+const OP_ADD: u8 = 0x30
+const OP_SUB: u8 = 0x31
+const OP_MUL: u8 = 0x32
+const OP_DIV: u8 = 0x33
+const OP_MOD: u8 = 0x34
+const OP_NEG: u8 = 0x35
+const OP_CMP_EQ: u8 = 0x40
+const OP_CMP_NE: u8 = 0x41
+const OP_CMP_LT: u8 = 0x42
+const OP_CMP_LE: u8 = 0x43
+const OP_CMP_GT: u8 = 0x44
+const OP_CMP_GE: u8 = 0x45
+const OP_LOG_AND: u8 = 0x50
+const OP_LOG_OR: u8 = 0x51
+const OP_LOG_NOT: u8 = 0x52
+const OP_JMP: u8 = 0x60
+const OP_JZ: u8 = 0x62
+const OP_JNZ: u8 = 0x63
+const OP_CALL: u8 = 0x70
+const OP_CALL_NATIVE: u8 = 0x72
+const OP_RET: u8 = 0x75
+const OP_RET_VAL: u8 = 0x76
+const OP_NEW_RECORD: u8 = 0x80
+const OP_LOAD_FIELD: u8 = 0x82
+const OP_STORE_FIELD: u8 = 0x83
+const OP_STR_CONCAT: u8 = 0x90
+
+// ============================================================================
+// Emitter State
+// ============================================================================
+
+struct Emitter {
+    module: *IRModule,
+    output: *ByteBuffer,
+
+    // Constant pool (indices map to output order)
+    const_int_indices: [256]i64,      // Integer values
+    const_int_map: [256]u64,          // Output index for each
+    const_int_count: u64,
+
+    const_str_indices: [256]string,   // String values
+    const_str_map: [256]u64,          // Output index for each
+    const_str_count: u64,
+
+    // Routine information
+    routine_offsets: [64]u32,         // Code offset for each routine
+    routine_count: u64,
+
+    // Current function being emitted
+    current_func_idx: u64,
+
+    // Register allocation (simple: track stack depth)
+    reg_stack: u8,   // Current "stack pointer" for register allocation
+
+    // Label resolution
+    label_positions: [256]u32,        // Position where label is defined
+    label_references: [256]u32,       // Position where label is referenced
+    label_ref_targets: [256]u64,      // Which label each reference refers to
+    label_ref_count: u64,
+
+    // Error state
+    had_error: bool,
+    error_msg: string,
+}
+
+fn emitter_new(module: *IRModule) Emitter {
+    const buf = @alloc(ByteBuffer, 1)
+    buf.* = bytebuffer_new()
+
+    var e = Emitter{
+        .module = module,
+        .output = buf,
+        .const_int_indices = @zeroinit([256]i64),
+        .const_int_map = @zeroinit([256]u64),
+        .const_int_count = 0,
+        .const_str_indices = @zeroinit([256]string),
+        .const_str_map = @zeroinit([256]u64),
+        .const_str_count = 0,
+        .routine_offsets = @zeroinit([64]u32),
+        .routine_count = 0,
+        .current_func_idx = 0,
+        .reg_stack = 0,
+        .label_positions = @zeroinit([256]u32),
+        .label_references = @zeroinit([256]u32),
+        .label_ref_targets = @zeroinit([256]u64),
+        .label_ref_count = 0,
+        .had_error = false,
+        .error_msg = "",
+    }
+
+    return e
+}
+
+fn emitter_error(e: *Emitter, msg: string) void {
+    if (not e.had_error) {
+        e.had_error = true
+        e.error_msg = msg
+    }
+}
+
+// ============================================================================
+// Register Allocation (Simple Stack-Based)
+// ============================================================================
+
+fn emit_push_reg(e: *Emitter) u8 {
+    const r = e.reg_stack
+    if (e.reg_stack < 15) {
+        e.reg_stack = e.reg_stack + 1
+    }
+    return r
+}
+
+fn emit_pop_reg(e: *Emitter) u8 {
+    if (e.reg_stack > 0) {
+        e.reg_stack = e.reg_stack - 1
+    }
+    return e.reg_stack
+}
+
+fn emit_peek_reg(e: *Emitter) u8 {
+    if (e.reg_stack > 0) {
+        return e.reg_stack - 1
+    }
+    return 0
+}
+
+// ============================================================================
+// Constant Pool
+// ============================================================================
+
+fn emit_add_int_const(e: *Emitter, value: i64) u64 {
+    // Check if already exists
+    for (i in 0..e.const_int_count) {
+        if (e.const_int_indices[i] == value) {
+            return e.const_int_map[i]
+        }
+    }
+
+    // Add new
+    const idx = e.const_int_count + e.const_str_count
+    e.const_int_indices[e.const_int_count] = value
+    e.const_int_map[e.const_int_count] = idx
+    e.const_int_count = e.const_int_count + 1
+    return idx
+}
+
+fn emit_add_str_const(e: *Emitter, value: string) u64 {
+    // Check if already exists
+    for (i in 0..e.const_str_count) {
+        if (e.const_str_indices[i] == value) {
+            return e.const_str_map[i]
+        }
+    }
+
+    // Add new
+    const idx = e.const_int_count + e.const_str_count
+    e.const_str_indices[e.const_str_count] = value
+    e.const_str_map[e.const_str_count] = idx
+    e.const_str_count = e.const_str_count + 1
+    return idx
+}
+
+// ============================================================================
+// Bytecode Writing Helpers
+// ============================================================================
+
+fn emit_byte(e: *Emitter, b: u8) void {
+    bytebuffer_write_byte(e.output, b)
+}
+
+fn emit_u16(e: *Emitter, v: u16) void {
+    // Little endian
+    emit_byte(e, (v % 256) as u8)
+    emit_byte(e, (v / 256) as u8)
+}
+
+fn emit_u32(e: *Emitter, v: u32) void {
+    // Little endian
+    emit_byte(e, ((v >> 0) % 256) as u8)
+    emit_byte(e, ((v >> 8) % 256) as u8)
+    emit_byte(e, ((v >> 16) % 256) as u8)
+    emit_byte(e, ((v >> 24) % 256) as u8)
+}
+
+fn emit_i64(e: *Emitter, v: i64) void {
+    // Little endian
+    var uv = v as u64
+    for (i in 0..8) {
+        emit_byte(e, (uv % 256) as u8)
+        uv = uv / 256
+    }
+}
+
+fn emit_current_pos(e: *Emitter) u32 {
+    return e.output.len as u32
+}
+
+// ============================================================================
+// Instruction Emission
+// ============================================================================
+
+// Format: [opcode:8] [rd:4|rs:4] [operand:8]
+fn emit_op_2reg(e: *Emitter, op: u8, rd: u8, rs: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, ((rd % 16) * 16) + (rs % 16))
+    emit_byte(e, 0)
+}
+
+// Format: [opcode:8] [rd:4|rs1:4] [rs2:4|0:4]
+fn emit_op_3reg(e: *Emitter, op: u8, rd: u8, rs1: u8, rs2: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, ((rd % 16) * 16) + (rs1 % 16))
+    emit_byte(e, (rs2 % 16) * 16)
+}
+
+// Format: [opcode:8] [rd:4|0:4] [imm8:8]
+fn emit_op_reg_imm8(e: *Emitter, op: u8, rd: u8, imm: u8) void {
+    emit_byte(e, op)
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, imm)
+}
+
+// Format: [opcode:8] [rd:4|0:4] [imm16:16]
+fn emit_op_reg_imm16(e: *Emitter, op: u8, rd: u8, imm: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, (rd % 16) * 16)
+    emit_u16(e, imm)
+}
+
+// Format: [opcode:8] [0:8] [offset:16]
+fn emit_jump(e: *Emitter, op: u8, offset: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, 0)
+    emit_u16(e, offset)
+}
+
+// Format: [opcode:8] [rs:4|0:4] [offset:16]
+fn emit_cond_jump(e: *Emitter, op: u8, rs: u8, offset: u16) void {
+    emit_byte(e, op)
+    emit_byte(e, (rs % 16) * 16)
+    emit_u16(e, offset)
+}
+
+// ============================================================================
+// IR Instruction Emission
+// ============================================================================
+
+fn emit_ir_instruction(e: *Emitter, inst: *IRInst) void {
+    if (e.had_error) { return }
+
+    if (inst.op == IROp.ConstInt) {
+        emit_ir_const_int(e, inst)
+    } else if (inst.op == IROp.ConstString) {
+        emit_ir_const_string(e, inst)
+    } else if (inst.op == IROp.ConstBool) {
+        emit_ir_const_bool(e, inst)
+    } else if (inst.op == IROp.ConstNull) {
+        emit_ir_const_null(e)
+    } else if (inst.op == IROp.LoadLocal) {
+        emit_ir_load_local(e, inst)
+    } else if (inst.op == IROp.StoreLocal) {
+        emit_ir_store_local(e, inst)
+    } else if (inst.op == IROp.LoadGlobal) {
+        emit_ir_load_global(e, inst)
+    } else if (inst.op == IROp.StoreGlobal) {
+        emit_ir_store_global(e, inst)
+    } else if (inst.op == IROp.Add) {
+        emit_ir_binary(e, OP_ADD)
+    } else if (inst.op == IROp.Sub) {
+        emit_ir_binary(e, OP_SUB)
+    } else if (inst.op == IROp.Mul) {
+        emit_ir_binary(e, OP_MUL)
+    } else if (inst.op == IROp.Div) {
+        emit_ir_binary(e, OP_DIV)
+    } else if (inst.op == IROp.Mod) {
+        emit_ir_binary(e, OP_MOD)
+    } else if (inst.op == IROp.Neg) {
+        emit_ir_unary(e, OP_NEG)
+    } else if (inst.op == IROp.Eq) {
+        emit_ir_binary(e, OP_CMP_EQ)
+    } else if (inst.op == IROp.Ne) {
+        emit_ir_binary(e, OP_CMP_NE)
+    } else if (inst.op == IROp.Lt) {
+        emit_ir_binary(e, OP_CMP_LT)
+    } else if (inst.op == IROp.Le) {
+        emit_ir_binary(e, OP_CMP_LE)
+    } else if (inst.op == IROp.Gt) {
+        emit_ir_binary(e, OP_CMP_GT)
+    } else if (inst.op == IROp.Ge) {
+        emit_ir_binary(e, OP_CMP_GE)
+    } else if (inst.op == IROp.And) {
+        emit_ir_binary(e, OP_LOG_AND)
+    } else if (inst.op == IROp.Or) {
+        emit_ir_binary(e, OP_LOG_OR)
+    } else if (inst.op == IROp.Not) {
+        emit_ir_unary(e, OP_LOG_NOT)
+    } else if (inst.op == IROp.Jump) {
+        emit_ir_jump(e, inst)
+    } else if (inst.op == IROp.JumpIf) {
+        emit_ir_jump_if(e, inst, true)
+    } else if (inst.op == IROp.JumpIfNot) {
+        emit_ir_jump_if(e, inst, false)
+    } else if (inst.op == IROp.Call) {
+        emit_ir_call(e, inst)
+    } else if (inst.op == IROp.Return) {
+        emit_ir_return(e)
+    } else {
+        // Other operations not yet implemented
+        emitter_error(e, "Unimplemented IR operation")
+    }
+}
+
+fn emit_ir_const_int(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const value = inst.operand_i64
+
+    // Use immediate if small enough
+    if (value >= -128 and value <= 127) {
+        emit_op_reg_imm8(e, OP_MOVI, rd, value as u8)
+    } else if (value >= -32768 and value <= 32767) {
+        emit_byte(e, OP_MOVI16)
+        emit_byte(e, (rd % 16) * 16)
+        emit_u16(e, value as u16)
+    } else {
+        // Use constant pool
+        const idx = emit_add_int_const(e, value)
+        emit_op_reg_imm16(e, OP_LOAD_CONST, rd, idx as u16)
+    }
+}
+
+fn emit_ir_const_string(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+
+    // Get string from module's string constants
+    var str_value = ""
+    if (inst.operand_u64 < e.module.string_constants.len) {
+        str_value = e.module.string_constants.items[inst.operand_u64]
+    }
+
+    const idx = emit_add_str_const(e, str_value)
+    emit_op_reg_imm16(e, OP_LOAD_CONST, rd, idx as u16)
+}
+
+fn emit_ir_const_bool(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    if (inst.operand_bool) {
+        emit_byte(e, OP_LOAD_TRUE)
+    } else {
+        emit_byte(e, OP_LOAD_FALSE)
+    }
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, 0)
+}
+
+fn emit_ir_const_null(e: *Emitter) void {
+    const rd = emit_push_reg(e)
+    emit_byte(e, OP_LOAD_NULL)
+    emit_byte(e, (rd % 16) * 16)
+    emit_byte(e, 0)
+}
+
+fn emit_ir_load_local(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const slot = inst.operand_u64
+    emit_op_reg_imm8(e, OP_LOAD_LOCAL, rd, slot as u8)
+}
+
+fn emit_ir_store_local(e: *Emitter, inst: *IRInst) void {
+    const rs = emit_pop_reg(e)
+    const slot = inst.operand_u64
+    emit_op_reg_imm8(e, OP_STORE_LOCAL, rs, slot as u8)
+}
+
+fn emit_ir_load_global(e: *Emitter, inst: *IRInst) void {
+    const rd = emit_push_reg(e)
+    const idx = inst.operand_u64
+    emit_op_reg_imm16(e, OP_LOAD_GLOBAL, rd, idx as u16)
+}
+
+fn emit_ir_store_global(e: *Emitter, inst: *IRInst) void {
+    const rs = emit_pop_reg(e)
+    const idx = inst.operand_u64
+    emit_op_reg_imm16(e, OP_STORE_GLOBAL, rs, idx as u16)
+}
+
+fn emit_ir_binary(e: *Emitter, op: u8) void {
+    const rs2 = emit_pop_reg(e)
+    const rs1 = emit_pop_reg(e)
+    const rd = emit_push_reg(e)
+    emit_op_3reg(e, op, rd, rs1, rs2)
+}
+
+fn emit_ir_unary(e: *Emitter, op: u8) void {
+    const rs = emit_pop_reg(e)
+    const rd = emit_push_reg(e)
+    emit_op_2reg(e, op, rd, rs)
+}
+
+fn emit_ir_jump(e: *Emitter, inst: *IRInst) void {
+    // Record reference for later patching
+    const ref_pos = emit_current_pos(e)
+    e.label_references[e.label_ref_count] = ref_pos
+    e.label_ref_targets[e.label_ref_count] = inst.target_label
+    e.label_ref_count = e.label_ref_count + 1
+
+    emit_jump(e, OP_JMP, 0)  // Placeholder offset
+}
+
+fn emit_ir_jump_if(e: *Emitter, inst: *IRInst, jump_if_true: bool) void {
+    const rs = emit_pop_reg(e)
+
+    // Record reference for later patching
+    const ref_pos = emit_current_pos(e)
+    e.label_references[e.label_ref_count] = ref_pos
+    e.label_ref_targets[e.label_ref_count] = inst.target_label
+    e.label_ref_count = e.label_ref_count + 1
+
+    if (jump_if_true) {
+        emit_cond_jump(e, OP_JNZ, rs, 0)
+    } else {
+        emit_cond_jump(e, OP_JZ, rs, 0)
+    }
+}
+
+fn emit_ir_call(e: *Emitter, inst: *IRInst) void {
+    const func_name = inst.operand_str
+    const argc = inst.operand_u64
+
+    // Find function index
+    var func_idx: u64 = 0
+    var found = false
+    for (i in 0..e.module.functions.len) {
+        if (e.module.functions.items[i].name == func_name) {
+            func_idx = i
+            found = true
+            break
+        }
+    }
+
+    if (not found) {
+        // Check if it's a native function
+        if (func_name == "print" or func_name == "println") {
+            // Call native
+            emit_byte(e, OP_CALL_NATIVE)
+            emit_byte(e, (argc as u8) * 16)
+            emit_u16(e, 0)  // Native index for print
+
+            // Adjust register stack for args consumed
+            for (i in 0..argc) {
+                emit_pop_reg(e)
+            }
+            return
+        }
+
+        emitter_error(e, "Unknown function")
+        return
+    }
+
+    // Emit call instruction
+    // Format: [argc:4|stack_argc:4] [routine_idx:16]
+    emit_byte(e, OP_CALL)
+    emit_byte(e, (argc as u8) * 16)  // argc in high nibble
+    emit_u16(e, func_idx as u16)
+
+    // Adjust register stack: pop args, push result
+    for (i in 0..argc) {
+        emit_pop_reg(e)
+    }
+    // Result goes in r15, but for simplicity push to track
+    emit_push_reg(e)
+}
+
+fn emit_ir_return(e: *Emitter) void {
+    if (e.reg_stack > 0) {
+        // Return with value
+        const rs = emit_peek_reg(e)
+        emit_byte(e, OP_RET_VAL)
+        emit_byte(e, (rs % 16) * 16)
+        emit_byte(e, 0)
+    } else {
+        // Return void
+        emit_byte(e, OP_RET)
+        emit_byte(e, 0)
+        emit_byte(e, 0)
+    }
+}
+
+// ============================================================================
+// Function Emission
+// ============================================================================
+
+fn emit_function(e: *Emitter, func: *IRFunction, func_idx: u64) void {
+    if (e.had_error) { return }
+
+    e.current_func_idx = func_idx
+    e.reg_stack = 0
+    e.label_ref_count = 0
+
+    // Clear label positions
+    for (i in 0..256) {
+        e.label_positions[i] = 0
+    }
+
+    // Record start offset
+    e.routine_offsets[func_idx] = emit_current_pos(e)
+
+    // Emit all instructions
+    for (i in 0..func.instructions.len) {
+        const inst = func.instructions.items[i]
+        emit_ir_instruction(e, inst)
+    }
+
+    // Patch jump targets
+    // Note: This is simplified - real impl would need proper label tracking
+}
+
+// ============================================================================
+// Module Emission
+// ============================================================================
+
+fn emit_module_header(e: *Emitter, entry_point: u32) void {
+    // Magic (4 bytes)
+    emit_byte(e, MAGIC_0)
+    emit_byte(e, MAGIC_1)
+    emit_byte(e, MAGIC_2)
+    emit_byte(e, MAGIC_3)
+
+    // Version (4 bytes)
+    emit_u16(e, VERSION_MAJOR)
+    emit_u16(e, VERSION_MINOR)
+
+    // Flags (4 bytes)
+    emit_u32(e, 0)
+
+    // Section count (4 bytes)
+    emit_u32(e, 4)  // constants, types, routines, code
+
+    // Entry point (4 bytes)
+    emit_u32(e, entry_point)
+
+    // Source hash (4 bytes)
+    emit_u32(e, 0)
+
+    // Reserved (8 bytes)
+    for (i in 0..8) {
+        emit_byte(e, 0)
+    }
+}
+
+fn emit_section_table(e: *Emitter, const_offset: u32, const_size: u32,
+                       types_offset: u32, types_size: u32,
+                       routines_offset: u32, routines_size: u32,
+                       code_offset: u32, code_size: u32) void {
+    // Constants section
+    emit_u32(e, SECTION_CONSTANTS)
+    emit_u32(e, const_offset)
+    emit_u32(e, const_size)
+    emit_u32(e, (e.const_int_count + e.const_str_count) as u32)
+
+    // Types section
+    emit_u32(e, SECTION_TYPES)
+    emit_u32(e, types_offset)
+    emit_u32(e, types_size)
+    emit_u32(e, e.module.structs.len as u32)
+
+    // Routines section
+    emit_u32(e, SECTION_ROUTINES)
+    emit_u32(e, routines_offset)
+    emit_u32(e, routines_size)
+    emit_u32(e, e.module.functions.len as u32)
+
+    // Code section
+    emit_u32(e, SECTION_CODE)
+    emit_u32(e, code_offset)
+    emit_u32(e, code_size)
+    emit_u32(e, 0)
+}
+
+fn emit_constants_section(e: *Emitter) void {
+    // Emit integer constants
+    for (i in 0..e.const_int_count) {
+        emit_byte(e, CONST_INTEGER)
+        emit_i64(e, e.const_int_indices[i])
+    }
+
+    // Emit string constants
+    for (i in 0..e.const_str_count) {
+        emit_byte(e, CONST_STRING)
+        const s = e.const_str_indices[i]
+        const len = str_len(s)
+        emit_u32(e, len as u32)
+        for (j in 0..len) {
+            emit_byte(e, str_char_at(s, j))
+        }
+    }
+}
+
+fn emit_types_section(e: *Emitter) void {
+    // Emit struct types
+    for (i in 0..e.module.structs.len) {
+        const st = e.module.structs.items[i]
+
+        // Type name
+        const name_len = str_len(st.name)
+        emit_u16(e, name_len as u16)
+        for (j in 0..name_len) {
+            emit_byte(e, str_char_at(st.name, j))
+        }
+
+        // Field count
+        var field_count: u64 = 0
+        if (st.type_info.fields != null) {
+            field_count = st.type_info.fields.len
+        }
+        emit_u16(e, field_count as u16)
+
+        // Fields
+        if (st.type_info.fields != null) {
+            for (j in 0..st.type_info.fields.len) {
+                const field = st.type_info.fields.items[j]
+
+                // Field name
+                const fname_len = str_len(field.name)
+                emit_u16(e, fname_len as u16)
+                for (k in 0..fname_len) {
+                    emit_byte(e, str_char_at(field.name, k))
+                }
+
+                // Field offset
+                emit_u16(e, field.offset as u16)
+
+                // Field type (simplified)
+                emit_byte(e, 7)  // int64 type code
+            }
+        }
+    }
+}
+
+fn emit_routines_section(e: *Emitter) void {
+    // Emit routine headers
+    for (i in 0..e.module.functions.len) {
+        const func = e.module.functions.items[i]
+
+        // Name
+        const name_len = str_len(func.name)
+        emit_u16(e, name_len as u16)
+        for (j in 0..name_len) {
+            emit_byte(e, str_char_at(func.name, j))
+        }
+
+        // Parameter count
+        emit_u16(e, func.params.len as u16)
+
+        // Local count
+        emit_u16(e, func.locals.len as u16)
+
+        // Code offset (will be patched)
+        emit_u32(e, e.routine_offsets[i])
+
+        // Flags
+        emit_u16(e, 0)
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+struct EmitResult {
+    bytecode: *ByteBuffer,
+    ok: bool,
+    error_msg: string,
+}
+
+fn emit(module: *IRModule) EmitResult {
+    var e = emitter_new(module)
+
+    // First pass: collect constants and emit code to temporary buffer
+    const code_buf = @alloc(ByteBuffer, 1)
+    code_buf.* = bytebuffer_new()
+    const orig_output = e.output
+    e.output = code_buf
+
+    // Emit all functions
+    for (i in 0..module.functions.len) {
+        emit_function(&e, module.functions.items[i], i)
+    }
+
+    if (e.had_error) {
+        return EmitResult{
+            .bytecode = e.output,
+            .ok = false,
+            .error_msg = e.error_msg,
+        }
+    }
+
+    // Second pass: build final bytecode with header and sections
+    e.output = orig_output
+
+    // Find entry point (main function)
+    var entry_point: u32 = 0xFFFFFFFF
+    for (i in 0..module.functions.len) {
+        if (module.functions.items[i].name == "main") {
+            entry_point = i as u32
+            break
+        }
+    }
+
+    // Reserve space for header (32 bytes) and section table (4 * 16 = 64 bytes)
+    const header_size: u32 = 32
+    const section_table_size: u32 = 64
+
+    // Calculate section offsets
+    const const_offset = header_size + section_table_size
+    var const_size: u32 = 0
+    for (i in 0..e.const_int_count) {
+        const_size = const_size + 9  // tag + i64
+    }
+    for (i in 0..e.const_str_count) {
+        const s = e.const_str_indices[i]
+        const_size = const_size + 5 + (str_len(s) as u32)  // tag + len + data
+    }
+
+    const types_offset = const_offset + const_size
+    var types_size: u32 = 0
+    // Simplified: just count bytes needed
+
+    const routines_offset = types_offset + types_size
+    var routines_size: u32 = 0
+    for (i in 0..module.functions.len) {
+        const func = module.functions.items[i]
+        routines_size = routines_size + 2 + (str_len(func.name) as u32)  // name
+        routines_size = routines_size + 2 + 2 + 4 + 2  // params, locals, offset, flags
+    }
+
+    const code_offset = routines_offset + routines_size
+    const code_size = code_buf.len as u32
+
+    // Emit header
+    emit_module_header(&e, entry_point)
+
+    // Emit section table
+    emit_section_table(&e, const_offset, const_size,
+                       types_offset, types_size,
+                       routines_offset, routines_size,
+                       code_offset, code_size)
+
+    // Emit constants
+    emit_constants_section(&e)
+
+    // Emit types
+    emit_types_section(&e)
+
+    // Emit routines
+    emit_routines_section(&e)
+
+    // Emit code
+    for (i in 0..code_buf.len) {
+        emit_byte(&e, code_buf.data[i])
+    }
+
+    return EmitResult{
+        .bytecode = e.output,
+        .ok = not e.had_error,
+        .error_msg = e.error_msg,
+    }
+}

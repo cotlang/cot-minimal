@@ -1,0 +1,31 @@
+// hello.cot - Simple test file for cot-minimal
+// This is the first program to be compiled by the minimal compiler
+
+fn main() void {
+    println("Hello from cot-minimal!")
+
+    // Test basic expressions
+    const x = 42
+    const y = 10
+    const sum = x + y
+
+    print("42 + 10 = ")
+    println(int_to_string(sum))
+
+    // Test conditionals
+    if (sum > 50) {
+        println("Sum is greater than 50")
+    } else {
+        println("Sum is 50 or less")
+    }
+
+    // Test loops
+    print("Counting: ")
+    for (i in 0..5) {
+        print(int_to_string(i))
+        print(" ")
+    }
+    println("")
+
+    println("Done!")
+}

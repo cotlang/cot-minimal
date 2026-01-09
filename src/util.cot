@@ -270,3 +270,29 @@ fn bytebuffer_write_string(bb: *ByteBuffer, s: string) void {
     }
     bb.len = bb.len + slen
 }
+
+// Alias for bytebuffer_write_u8
+fn bytebuffer_write_byte(bb: *ByteBuffer, value: u8) void {
+    bytebuffer_write_u8(bb, value)
+}
+
+// Get bytebuffer as slice
+fn bytebuffer_to_slice(bb: *ByteBuffer) []u8 {
+    return bb.data
+}
+
+// ============================================================================
+// Source Location
+// ============================================================================
+
+struct SourceLoc {
+    line: u64,
+    column: u64,
+}
+
+fn sourceloc_new(line: u64, column: u64) SourceLoc {
+    return SourceLoc{
+        .line = line,
+        .column = column,
+    }
+}

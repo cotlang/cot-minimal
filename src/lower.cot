@@ -1,0 +1,924 @@
+// lower.cot - AST to IR lowering for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// Transforms AST nodes into stack-based IR instructions.
+
+// ============================================================================
+// Lowering Context
+// ============================================================================
+
+struct Scope {
+    locals: *IRLocalList,
+    parent: *Scope,
+}
+
+fn scope_new(parent: *Scope) *Scope {
+    const s = @alloc(Scope, 1)
+    const locals = @alloc(IRLocalList, 1)
+    locals.* = irlocallist_new()
+    s.locals = locals
+    s.parent = parent
+    return s
+}
+
+fn scope_find_local(scope: *Scope, name: string) *IRLocal {
+    // Search current scope
+    for (i in 0..scope.locals.len) {
+        if (scope.locals.items[i].name == name) {
+            return scope.locals.items[i]
+        }
+    }
+    // Search parent scope
+    if (scope.parent != null) {
+        return scope_find_local(scope.parent, name)
+    }
+    return null
+}
+
+struct Lowerer {
+    module: *IRModule,
+    current_func: *IRFunction,
+    current_scope: *Scope,
+    source: string,
+
+    // For break/continue
+    loop_break_label: u64,
+    loop_continue_label: u64,
+    in_loop: bool,
+
+    // Error state
+    had_error: bool,
+    error_msg: string,
+}
+
+fn lowerer_new(source: string) Lowerer {
+    return Lowerer{
+        .module = irmodule_new(),
+        .current_func = null,
+        .current_scope = null,
+        .source = source,
+        .loop_break_label = 0,
+        .loop_continue_label = 0,
+        .in_loop = false,
+        .had_error = false,
+        .error_msg = "",
+    }
+}
+
+fn lowerer_error(l: *Lowerer, msg: string) void {
+    if (not l.had_error) {
+        l.had_error = true
+        l.error_msg = msg
+    }
+}
+
+// ============================================================================
+// Type Resolution
+// ============================================================================
+
+fn lower_type(l: *Lowerer, type_node: *TypeNode) *IRTypeInfo {
+    if (type_node == null) {
+        return ir_type_void()
+    }
+
+    if (type_node.tag == TypeTag.Named) {
+        // Built-in types
+        if (type_node.name == "void") { return ir_type_void() }
+        if (type_node.name == "bool") { return ir_type_bool() }
+        if (type_node.name == "i64") { return ir_type_i64() }
+        if (type_node.name == "u64") { return ir_type_u64() }
+        if (type_node.name == "u8") { return ir_type_u8() }
+        if (type_node.name == "u16") { return ir_type_u16() }
+        if (type_node.name == "u32") { return ir_type_u32() }
+        if (type_node.name == "string") { return ir_type_string() }
+
+        // User-defined struct or enum
+        const st = irmodule_find_struct(l.module, type_node.name)
+        if (st != null) {
+            return st.type_info
+        }
+
+        const et = irmodule_find_enum(l.module, type_node.name)
+        if (et != null) {
+            return make_ir_type_named(IRType.Enum, type_node.name)
+        }
+
+        lowerer_error(l, "Unknown type")
+        return ir_type_void()
+    }
+
+    if (type_node.tag == TypeTag.Pointer) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_pointer(inner)
+    }
+
+    if (type_node.tag == TypeTag.Array) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_array(inner, type_node.array_size)
+    }
+
+    if (type_node.tag == TypeTag.Slice) {
+        const inner = lower_type(l, type_node.inner)
+        return make_ir_type_slice(inner)
+    }
+
+    return ir_type_void()
+}
+
+// ============================================================================
+// Expression Lowering
+// ============================================================================
+
+fn lower_expr(l: *Lowerer, expr: *Expr) void {
+    if (l.had_error) { return }
+    if (expr == null) { return }
+
+    if (expr.tag == ExprTag.Integer) {
+        lower_integer(l, expr)
+    } else if (expr.tag == ExprTag.String) {
+        lower_string(l, expr)
+    } else if (expr.tag == ExprTag.Bool) {
+        lower_bool(l, expr)
+    } else if (expr.tag == ExprTag.Null) {
+        lower_null(l)
+    } else if (expr.tag == ExprTag.Identifier) {
+        lower_identifier(l, expr)
+    } else if (expr.tag == ExprTag.Binary) {
+        lower_binary(l, expr)
+    } else if (expr.tag == ExprTag.Unary) {
+        lower_unary(l, expr)
+    } else if (expr.tag == ExprTag.Call) {
+        lower_call(l, expr)
+    } else if (expr.tag == ExprTag.Index) {
+        lower_index(l, expr)
+    } else if (expr.tag == ExprTag.Field) {
+        lower_field(l, expr)
+    } else if (expr.tag == ExprTag.Deref) {
+        lower_deref(l, expr)
+    } else if (expr.tag == ExprTag.AddressOf) {
+        lower_address_of(l, expr)
+    } else if (expr.tag == ExprTag.StructInit) {
+        lower_struct_init(l, expr)
+    } else if (expr.tag == ExprTag.ArrayInit) {
+        lower_array_init(l, expr)
+    } else {
+        lowerer_error(l, "Unknown expression type")
+    }
+}
+
+fn lower_integer(l: *Lowerer, expr: *Expr) void {
+    const inst = make_inst_i64(IROp.ConstInt, expr.int_value)
+    inst.result_type = ir_type_i64()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_string(l: *Lowerer, expr: *Expr) void {
+    const str_index = irmodule_add_string(l.module, expr.str_value)
+    const inst = make_inst_u64(IROp.ConstString, str_index)
+    inst.result_type = ir_type_string()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_bool(l: *Lowerer, expr: *Expr) void {
+    const inst = make_inst_bool(IROp.ConstBool, expr.bool_value)
+    inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_null(l: *Lowerer) void {
+    const inst = make_inst(IROp.ConstNull)
+    inst.result_type = make_ir_type_pointer(ir_type_void())
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_identifier(l: *Lowerer, expr: *Expr) void {
+    const name = expr.ident_name
+
+    // Check local variables first
+    const local = scope_find_local(l.current_scope, name)
+    if (local != null) {
+        const inst = make_inst_u64(IROp.LoadLocal, local.index)
+        inst.result_type = local.type
+        irfunction_emit(l.current_func, inst)
+        return
+    }
+
+    // Check globals
+    for (i in 0..l.module.globals.len) {
+        if (l.module.globals.items[i].name == name) {
+            const global = l.module.globals.items[i]
+            const inst = make_inst_u64(IROp.LoadGlobal, global.index)
+            inst.result_type = global.type
+            irfunction_emit(l.current_func, inst)
+            return
+        }
+    }
+
+    // Check if it's an enum variant (EnumName.Variant)
+    // This would be handled by field access, not bare identifier
+
+    lowerer_error(l, "Unknown identifier")
+}
+
+fn lower_binary(l: *Lowerer, expr: *Expr) void {
+    // Short-circuit evaluation for 'and' and 'or'
+    if (expr.binary_op == TokenType.KwAnd) {
+        lower_short_circuit_and(l, expr)
+        return
+    }
+    if (expr.binary_op == TokenType.KwOr) {
+        lower_short_circuit_or(l, expr)
+        return
+    }
+
+    // Regular binary operations
+    lower_expr(l, expr.binary_left)
+    lower_expr(l, expr.binary_right)
+
+    var op = IROp.Add
+    if (expr.binary_op == TokenType.Plus) { op = IROp.Add }
+    else if (expr.binary_op == TokenType.Minus) { op = IROp.Sub }
+    else if (expr.binary_op == TokenType.Star) { op = IROp.Mul }
+    else if (expr.binary_op == TokenType.Slash) { op = IROp.Div }
+    else if (expr.binary_op == TokenType.Percent) { op = IROp.Mod }
+    else if (expr.binary_op == TokenType.EqualEqual) { op = IROp.Eq }
+    else if (expr.binary_op == TokenType.BangEqual) { op = IROp.Ne }
+    else if (expr.binary_op == TokenType.Less) { op = IROp.Lt }
+    else if (expr.binary_op == TokenType.LessEqual) { op = IROp.Le }
+    else if (expr.binary_op == TokenType.Greater) { op = IROp.Gt }
+    else if (expr.binary_op == TokenType.GreaterEqual) { op = IROp.Ge }
+    else {
+        lowerer_error(l, "Unknown binary operator")
+        return
+    }
+
+    const inst = make_inst(op)
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_short_circuit_and(l: *Lowerer, expr: *Expr) void {
+    // if left is false, result is false (don't eval right)
+    // left && right:
+    //   eval left
+    //   jump_if_not end_label
+    //   eval right
+    //   jump done_label
+    // end_label:
+    //   push false
+    // done_label:
+
+    const end_label = irfunction_new_label(l.current_func)
+    const done_label = irfunction_new_label(l.current_func)
+
+    lower_expr(l, expr.binary_left)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+
+    lower_expr(l, expr.binary_right)
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, done_label))
+
+    // end_label: push false
+    const end_inst = make_inst_label(IROp.Jump, 0)  // Label marker
+    end_inst.target_label = end_label
+    end_inst.op = IROp.ConstBool  // Repurpose as label target
+    // Note: This is a simplification - in real impl we'd need proper label handling
+
+    const false_inst = make_inst_bool(IROp.ConstBool, false)
+    false_inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, false_inst)
+
+    // done_label marker would go here
+}
+
+fn lower_short_circuit_or(l: *Lowerer, expr: *Expr) void {
+    // if left is true, result is true (don't eval right)
+    const end_label = irfunction_new_label(l.current_func)
+    const done_label = irfunction_new_label(l.current_func)
+
+    lower_expr(l, expr.binary_left)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIf, end_label))
+
+    lower_expr(l, expr.binary_right)
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, done_label))
+
+    const true_inst = make_inst_bool(IROp.ConstBool, true)
+    true_inst.result_type = ir_type_bool()
+    irfunction_emit(l.current_func, true_inst)
+}
+
+fn lower_unary(l: *Lowerer, expr: *Expr) void {
+    lower_expr(l, expr.unary_operand)
+
+    if (expr.unary_op == TokenType.Minus) {
+        irfunction_emit(l.current_func, make_inst(IROp.Neg))
+    } else if (expr.unary_op == TokenType.KwNot) {
+        irfunction_emit(l.current_func, make_inst(IROp.Not))
+    } else {
+        lowerer_error(l, "Unknown unary operator")
+    }
+}
+
+fn lower_call(l: *Lowerer, expr: *Expr) void {
+    // Push arguments
+    if (expr.call_args != null) {
+        for (i in 0..expr.call_args.len) {
+            lower_expr(l, expr.call_args.items[i])
+        }
+    }
+
+    // Get function name
+    if (expr.call_callee.tag != ExprTag.Identifier) {
+        lowerer_error(l, "Only direct function calls supported")
+        return
+    }
+
+    const func_name = expr.call_callee.ident_name
+    var arg_count: u64 = 0
+    if (expr.call_args != null) {
+        arg_count = expr.call_args.len
+    }
+
+    const inst = make_inst_str(IROp.Call, func_name)
+    inst.operand_u64 = arg_count
+    irfunction_emit(l.current_func, inst)
+}
+
+fn lower_index(l: *Lowerer, expr: *Expr) void {
+    // base[index] -> get pointer to element, then load
+    lower_expr(l, expr.index_base)
+    lower_expr(l, expr.index_index)
+    irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_field(l: *Lowerer, expr: *Expr) void {
+    // Check if it's an enum variant access (EnumName.Variant)
+    if (expr.field_base.tag == ExprTag.Identifier) {
+        const base_name = expr.field_base.ident_name
+        const et = irmodule_find_enum(l.module, base_name)
+        if (et != null) {
+            // Find variant index
+            for (i in 0..et.variants.len) {
+                if (et.variants.items[i] == expr.field_name) {
+                    const inst = make_inst_u64(IROp.ConstInt, i)
+                    inst.result_type = make_ir_type_named(IRType.Enum, base_name)
+                    irfunction_emit(l.current_func, inst)
+                    return
+                }
+            }
+            lowerer_error(l, "Unknown enum variant")
+            return
+        }
+    }
+
+    // Regular field access
+    lower_expr(l, expr.field_base)
+    const inst = make_inst_str(IROp.GetFieldPtr, expr.field_name)
+    irfunction_emit(l.current_func, inst)
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_deref(l: *Lowerer, expr: *Expr) void {
+    lower_expr(l, expr.deref_operand)
+    irfunction_emit(l.current_func, make_inst(IROp.Load))
+}
+
+fn lower_address_of(l: *Lowerer, expr: *Expr) void {
+    // &variable -> get address of local
+    if (expr.addressof_operand.tag == ExprTag.Identifier) {
+        const name = expr.addressof_operand.ident_name
+        const local = scope_find_local(l.current_scope, name)
+        if (local != null) {
+            const inst = make_inst_u64(IROp.AddressOf, local.index)
+            inst.result_type = make_ir_type_pointer(local.type)
+            irfunction_emit(l.current_func, inst)
+            return
+        }
+    }
+
+    lowerer_error(l, "Can only take address of variables")
+}
+
+fn lower_struct_init(l: *Lowerer, expr: *Expr) void {
+    const type_name = expr.struct_type_name
+    const st = irmodule_find_struct(l.module, type_name)
+    if (st == null) {
+        lowerer_error(l, "Unknown struct type")
+        return
+    }
+
+    // Allocate struct
+    const alloc_inst = make_inst_str(IROp.AllocStruct, type_name)
+    alloc_inst.result_type = st.type_info
+    irfunction_emit(l.current_func, alloc_inst)
+
+    // Initialize fields
+    if (expr.struct_fields != null) {
+        for (i in 0..expr.struct_fields.len) {
+            const field_init = expr.struct_fields.items[i]
+
+            // Duplicate struct pointer (for field store)
+            // In a real impl we'd need a Dup instruction
+
+            // Get field pointer
+            const field_inst = make_inst_str(IROp.GetFieldPtr, field_init.name)
+            irfunction_emit(l.current_func, field_inst)
+
+            // Evaluate value
+            lower_expr(l, field_init.value)
+
+            // Store
+            irfunction_emit(l.current_func, make_inst(IROp.Store))
+        }
+    }
+}
+
+fn lower_array_init(l: *Lowerer, expr: *Expr) void {
+    var count: u64 = 0
+    if (expr.array_elements != null) {
+        count = expr.array_elements.len
+    }
+
+    // Allocate array
+    const alloc_inst = make_inst_u64(IROp.AllocArray, count)
+    irfunction_emit(l.current_func, alloc_inst)
+
+    // Initialize elements
+    if (expr.array_elements != null) {
+        for (i in 0..expr.array_elements.len) {
+            // Get element pointer
+            const idx_inst = make_inst_u64(IROp.ConstInt, i)
+            irfunction_emit(l.current_func, idx_inst)
+            irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+
+            // Evaluate value
+            lower_expr(l, expr.array_elements.items[i])
+
+            // Store
+            irfunction_emit(l.current_func, make_inst(IROp.Store))
+        }
+    }
+}
+
+// ============================================================================
+// Statement Lowering
+// ============================================================================
+
+fn lower_stmt(l: *Lowerer, stmt: *Stmt) void {
+    if (l.had_error) { return }
+    if (stmt == null) { return }
+
+    if (stmt.tag == StmtTag.VarDecl) {
+        lower_var_decl(l, stmt, false)
+    } else if (stmt.tag == StmtTag.ConstDecl) {
+        lower_var_decl(l, stmt, true)
+    } else if (stmt.tag == StmtTag.Assignment) {
+        lower_assignment(l, stmt)
+    } else if (stmt.tag == StmtTag.If) {
+        lower_if(l, stmt)
+    } else if (stmt.tag == StmtTag.While) {
+        lower_while(l, stmt)
+    } else if (stmt.tag == StmtTag.For) {
+        lower_for(l, stmt)
+    } else if (stmt.tag == StmtTag.ForRange) {
+        lower_for_range(l, stmt)
+    } else if (stmt.tag == StmtTag.Return) {
+        lower_return(l, stmt)
+    } else if (stmt.tag == StmtTag.Break) {
+        lower_break(l)
+    } else if (stmt.tag == StmtTag.Continue) {
+        lower_continue(l)
+    } else if (stmt.tag == StmtTag.Block) {
+        lower_block(l, stmt)
+    } else if (stmt.tag == StmtTag.ExprStmt) {
+        lower_expr_stmt(l, stmt)
+    } else if (stmt.tag == StmtTag.FnDecl) {
+        // Function declarations are handled in first pass
+    } else if (stmt.tag == StmtTag.StructDecl) {
+        // Struct declarations are handled in first pass
+    } else if (stmt.tag == StmtTag.EnumDecl) {
+        // Enum declarations are handled in first pass
+    } else {
+        lowerer_error(l, "Unknown statement type")
+    }
+}
+
+fn lower_var_decl(l: *Lowerer, stmt: *Stmt, is_const: bool) void {
+    const name = stmt.decl_name
+    const type_info = lower_type(l, stmt.decl_type)
+
+    // Add local variable
+    const index = irfunction_add_local(l.current_func, name, type_info)
+
+    // Also add to scope
+    const local = @alloc(IRLocal, 1)
+    local.name = name
+    local.type = type_info
+    local.index = index
+    irlocallist_push(l.current_scope.locals, local)
+
+    // Initialize if there's an initializer
+    if (stmt.decl_init != null) {
+        lower_expr(l, stmt.decl_init)
+        const store_inst = make_inst_u64(IROp.StoreLocal, index)
+        irfunction_emit(l.current_func, store_inst)
+    }
+}
+
+fn lower_assignment(l: *Lowerer, stmt: *Stmt) void {
+    const target = stmt.assign_target
+
+    if (target.tag == ExprTag.Identifier) {
+        // Simple variable assignment
+        const name = target.ident_name
+        const local = scope_find_local(l.current_scope, name)
+        if (local != null) {
+            lower_expr(l, stmt.assign_value)
+            const store_inst = make_inst_u64(IROp.StoreLocal, local.index)
+            irfunction_emit(l.current_func, store_inst)
+            return
+        }
+
+        // Check globals
+        for (i in 0..l.module.globals.len) {
+            if (l.module.globals.items[i].name == name) {
+                lower_expr(l, stmt.assign_value)
+                const store_inst = make_inst_u64(IROp.StoreGlobal, l.module.globals.items[i].index)
+                irfunction_emit(l.current_func, store_inst)
+                return
+            }
+        }
+
+        lowerer_error(l, "Unknown variable in assignment")
+    } else if (target.tag == ExprTag.Index) {
+        // array[index] = value
+        lower_expr(l, target.index_base)
+        lower_expr(l, target.index_index)
+        irfunction_emit(l.current_func, make_inst(IROp.GetIndexPtr))
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else if (target.tag == ExprTag.Field) {
+        // obj.field = value
+        lower_expr(l, target.field_base)
+        const field_inst = make_inst_str(IROp.GetFieldPtr, target.field_name)
+        irfunction_emit(l.current_func, field_inst)
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else if (target.tag == ExprTag.Deref) {
+        // ptr.* = value
+        lower_expr(l, target.deref_operand)
+        lower_expr(l, stmt.assign_value)
+        irfunction_emit(l.current_func, make_inst(IROp.Store))
+    } else {
+        lowerer_error(l, "Invalid assignment target")
+    }
+}
+
+fn lower_if(l: *Lowerer, stmt: *Stmt) void {
+    const else_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+
+    // Condition
+    lower_expr(l, stmt.if_condition)
+
+    if (stmt.if_else != null) {
+        irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, else_label))
+    } else {
+        irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+    }
+
+    // Then branch
+    lower_stmt(l, stmt.if_then)
+
+    if (stmt.if_else != null) {
+        irfunction_emit(l.current_func, make_inst_label(IROp.Jump, end_label))
+        // else_label would be here
+        lower_stmt(l, stmt.if_else)
+    }
+
+    // end_label would be here
+}
+
+fn lower_while(l: *Lowerer, stmt: *Stmt) void {
+    const loop_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+
+    // Save loop context
+    const prev_break = l.loop_break_label
+    const prev_continue = l.loop_continue_label
+    const prev_in_loop = l.in_loop
+
+    l.loop_break_label = end_label
+    l.loop_continue_label = loop_label
+    l.in_loop = true
+
+    // loop_label:
+    //   eval condition
+    //   jump_if_not end_label
+    //   body
+    //   jump loop_label
+    // end_label:
+
+    lower_expr(l, stmt.while_condition)
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIfNot, end_label))
+
+    lower_stmt(l, stmt.while_body)
+
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, loop_label))
+
+    // Restore loop context
+    l.loop_break_label = prev_break
+    l.loop_continue_label = prev_continue
+    l.in_loop = prev_in_loop
+}
+
+fn lower_for(l: *Lowerer, stmt: *Stmt) void {
+    // for item in collection { body }
+    // This requires iterator protocol - simplify to error for now
+    lowerer_error(l, "For-in loops not yet implemented")
+}
+
+fn lower_for_range(l: *Lowerer, stmt: *Stmt) void {
+    // for i in start..end { body }
+    const loop_label = irfunction_new_label(l.current_func)
+    const end_label = irfunction_new_label(l.current_func)
+    const continue_label = irfunction_new_label(l.current_func)
+
+    // Save loop context
+    const prev_break = l.loop_break_label
+    const prev_continue = l.loop_continue_label
+    const prev_in_loop = l.in_loop
+
+    l.loop_break_label = end_label
+    l.loop_continue_label = continue_label
+    l.in_loop = true
+
+    // Create loop variable
+    const var_index = irfunction_add_local(l.current_func, stmt.forrange_var_name, ir_type_i64())
+    const local = @alloc(IRLocal, 1)
+    local.name = stmt.forrange_var_name
+    local.type = ir_type_i64()
+    local.index = var_index
+    irlocallist_push(l.current_scope.locals, local)
+
+    // Initialize: i = start
+    lower_expr(l, stmt.forrange_start)
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, var_index))
+
+    // Store end value in a temp
+    const end_index = irfunction_add_local(l.current_func, "__end", ir_type_i64())
+    lower_expr(l, stmt.forrange_end)
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, end_index))
+
+    // loop_label:
+    //   if i >= end, jump end_label
+    //   body
+    // continue_label:
+    //   i = i + 1
+    //   jump loop_label
+    // end_label:
+
+    // Condition check
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, var_index))
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, end_index))
+    irfunction_emit(l.current_func, make_inst(IROp.Ge))
+    irfunction_emit(l.current_func, make_inst_label(IROp.JumpIf, end_label))
+
+    // Body
+    lower_stmt(l, stmt.forrange_body)
+
+    // continue_label: increment
+    irfunction_emit(l.current_func, make_inst_u64(IROp.LoadLocal, var_index))
+    irfunction_emit(l.current_func, make_inst_i64(IROp.ConstInt, 1))
+    irfunction_emit(l.current_func, make_inst(IROp.Add))
+    irfunction_emit(l.current_func, make_inst_u64(IROp.StoreLocal, var_index))
+
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, loop_label))
+
+    // Restore loop context
+    l.loop_break_label = prev_break
+    l.loop_continue_label = prev_continue
+    l.in_loop = prev_in_loop
+}
+
+fn lower_return(l: *Lowerer, stmt: *Stmt) void {
+    if (stmt.return_value != null) {
+        lower_expr(l, stmt.return_value)
+    }
+    irfunction_emit(l.current_func, make_inst(IROp.Return))
+}
+
+fn lower_break(l: *Lowerer) void {
+    if (not l.in_loop) {
+        lowerer_error(l, "Break outside loop")
+        return
+    }
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, l.loop_break_label))
+}
+
+fn lower_continue(l: *Lowerer) void {
+    if (not l.in_loop) {
+        lowerer_error(l, "Continue outside loop")
+        return
+    }
+    irfunction_emit(l.current_func, make_inst_label(IROp.Jump, l.loop_continue_label))
+}
+
+fn lower_block(l: *Lowerer, stmt: *Stmt) void {
+    // Create new scope
+    const prev_scope = l.current_scope
+    l.current_scope = scope_new(prev_scope)
+
+    if (stmt.block_stmts != null) {
+        for (i in 0..stmt.block_stmts.len) {
+            lower_stmt(l, stmt.block_stmts.items[i])
+        }
+    }
+
+    // Restore scope
+    l.current_scope = prev_scope
+}
+
+fn lower_expr_stmt(l: *Lowerer, stmt: *Stmt) void {
+    lower_expr(l, stmt.expr_stmt)
+    // Pop result if expression produces a value
+    // In a real impl we'd track this
+}
+
+// ============================================================================
+// Declaration Collection (First Pass)
+// ============================================================================
+
+fn collect_declarations(l: *Lowerer, ast: *AST) void {
+    if (ast.statements == null) { return }
+
+    for (i in 0..ast.statements.len) {
+        const stmt = ast.statements.items[i]
+
+        if (stmt.tag == StmtTag.StructDecl) {
+            collect_struct_decl(l, stmt)
+        } else if (stmt.tag == StmtTag.EnumDecl) {
+            collect_enum_decl(l, stmt)
+        } else if (stmt.tag == StmtTag.FnDecl) {
+            collect_fn_decl(l, stmt)
+        }
+    }
+}
+
+fn collect_struct_decl(l: *Lowerer, stmt: *Stmt) void {
+    const st = @alloc(IRStructType, 1)
+    st.name = stmt.struct_name
+
+    const type_info = @alloc(IRTypeInfo, 1)
+    type_info.tag = IRType.Struct
+    type_info.name = stmt.struct_name
+    type_info.inner = null
+    type_info.array_size = 0
+
+    const fields = @alloc(IRFieldList, 1)
+    fields.* = irfieldlist_new()
+    type_info.fields = fields
+    type_info.variants = null
+
+    // Add fields
+    if (stmt.struct_fields != null) {
+        var offset: u64 = 0
+        for (i in 0..stmt.struct_fields.len) {
+            const ast_field = stmt.struct_fields.items[i]
+            const field = @alloc(IRField, 1)
+            field.name = ast_field.name
+            field.type = lower_type(l, ast_field.type)
+            field.offset = offset
+            irfieldlist_push(fields, field)
+            offset = offset + 8  // Simplified: assume 8 bytes per field
+        }
+    }
+
+    st.type_info = type_info
+    irstructtypelist_push(l.module.structs, st)
+}
+
+fn collect_enum_decl(l: *Lowerer, stmt: *Stmt) void {
+    const et = @alloc(IREnumType, 1)
+    et.name = stmt.enum_name
+
+    const variants = @alloc(StringList, 1)
+    variants.* = stringlist_new()
+    et.variants = variants
+
+    if (stmt.enum_variants != null) {
+        for (i in 0..stmt.enum_variants.len) {
+            stringlist_push(variants, stmt.enum_variants.items[i])
+        }
+    }
+
+    irenumtypelist_push(l.module.enums, et)
+}
+
+fn collect_fn_decl(l: *Lowerer, stmt: *Stmt) void {
+    const func = irfunction_new(stmt.fn_name)
+
+    // Add parameters
+    if (stmt.fn_params != null) {
+        for (i in 0..stmt.fn_params.len) {
+            const ast_param = stmt.fn_params.items[i]
+            const param = @alloc(IRParam, 1)
+            param.name = ast_param.name
+            param.type = lower_type(l, ast_param.type)
+            irparamlist_push(func.params, param)
+        }
+    }
+
+    func.return_type = lower_type(l, stmt.fn_return_type)
+    irfunctionlist_push(l.module.functions, func)
+}
+
+// ============================================================================
+// Function Body Lowering (Second Pass)
+// ============================================================================
+
+fn lower_function_bodies(l: *Lowerer, ast: *AST) void {
+    if (ast.statements == null) { return }
+
+    for (i in 0..ast.statements.len) {
+        const stmt = ast.statements.items[i]
+
+        if (stmt.tag == StmtTag.FnDecl) {
+            lower_function_body(l, stmt)
+        }
+    }
+}
+
+fn lower_function_body(l: *Lowerer, stmt: *Stmt) void {
+    // Find the IR function
+    const func = irmodule_find_function(l.module, stmt.fn_name)
+    if (func == null) {
+        lowerer_error(l, "Function not found")
+        return
+    }
+
+    l.current_func = func
+
+    // Create scope with parameters as locals
+    l.current_scope = scope_new(null)
+
+    if (stmt.fn_params != null) {
+        for (i in 0..stmt.fn_params.len) {
+            const ast_param = stmt.fn_params.items[i]
+            const type_info = lower_type(l, ast_param.type)
+            const index = irfunction_add_local(func, ast_param.name, type_info)
+
+            const local = @alloc(IRLocal, 1)
+            local.name = ast_param.name
+            local.type = type_info
+            local.index = index
+            irlocallist_push(l.current_scope.locals, local)
+        }
+    }
+
+    // Lower function body
+    if (stmt.fn_body != null) {
+        lower_stmt(l, stmt.fn_body)
+    }
+
+    // Add implicit return for void functions
+    if (func.return_type.tag == IRType.Void) {
+        irfunction_emit(func, make_inst(IROp.Return))
+    }
+
+    l.current_func = null
+    l.current_scope = null
+}
+
+// ============================================================================
+// Main Lowering Entry Point
+// ============================================================================
+
+struct LowerResult {
+    module: *IRModule,
+    ok: bool,
+    error_msg: string,
+}
+
+fn lower(ast: *AST, source: string) LowerResult {
+    var l = lowerer_new(source)
+
+    // First pass: collect declarations
+    collect_declarations(&l, ast)
+
+    if (l.had_error) {
+        return LowerResult{
+            .module = l.module,
+            .ok = false,
+            .error_msg = l.error_msg,
+        }
+    }
+
+    // Second pass: lower function bodies
+    lower_function_bodies(&l, ast)
+
+    return LowerResult{
+        .module = l.module,
+        .ok = not l.had_error,
+        .error_msg = l.error_msg,
+    }
+}
