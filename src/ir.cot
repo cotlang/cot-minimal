@@ -1,0 +1,591 @@
+// ir.cot - Intermediate Representation for Minimal Cot
+// Part of cot-minimal: Track B of bootstrap race
+//
+// A simple stack-based IR that maps directly to bytecode.
+// Uses instruction encoding compatible with Cot bytecode format.
+
+// ============================================================================
+// IR Types
+// ============================================================================
+
+enum IRType {
+    Void,
+    Bool,
+    I64,
+    U64,
+    U8,
+    U16,
+    U32,
+    String,
+    Pointer,
+    Array,
+    Slice,
+    Struct,
+    Enum,
+}
+
+struct IRTypeInfo {
+    tag: IRType,
+    name: string,           // For struct/enum
+    inner: *IRTypeInfo,     // For pointer/array/slice
+    array_size: u64,        // For array
+    fields: *IRFieldList,   // For struct
+    variants: *StringList,  // For enum
+}
+
+struct IRField {
+    name: string,
+    type: *IRTypeInfo,
+    offset: u64,
+}
+
+struct IRFieldList {
+    items: []*IRField,
+    len: u64,
+    cap: u64,
+}
+
+fn irfieldlist_new() IRFieldList {
+    return IRFieldList{
+        .items = @alloc([]*IRField, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn irfieldlist_push(list: *IRFieldList, field: *IRField) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRField, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = field
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// IR Instructions
+// ============================================================================
+
+enum IROp {
+    // Constants
+    ConstInt,       // Push integer constant
+    ConstString,    // Push string constant
+    ConstBool,      // Push boolean constant
+    ConstNull,      // Push null
+
+    // Variables
+    LoadLocal,      // Load local variable
+    StoreLocal,     // Store local variable
+    LoadGlobal,     // Load global variable
+    StoreGlobal,    // Store global variable
+
+    // Arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Neg,
+
+    // Comparison
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Logical
+    And,
+    Or,
+    Not,
+
+    // Memory
+    Load,           // Dereference pointer
+    Store,          // Store through pointer
+    GetFieldPtr,    // Get pointer to struct field
+    GetIndexPtr,    // Get pointer to array element
+    AddressOf,      // Get address of local
+
+    // Control flow
+    Jump,           // Unconditional jump
+    JumpIf,         // Jump if true
+    JumpIfNot,      // Jump if false
+    Call,           // Call function
+    Return,         // Return from function
+
+    // Struct/Array
+    AllocStruct,    // Allocate struct
+    AllocArray,     // Allocate array
+
+    // Type
+    Convert,        // Type conversion
+}
+
+struct IRInst {
+    op: IROp,
+    operand_i64: i64,
+    operand_u64: u64,
+    operand_str: string,
+    operand_bool: bool,
+    target_label: u64,      // For jumps
+    result_type: *IRTypeInfo,
+}
+
+struct IRInstList {
+    items: []*IRInst,
+    len: u64,
+    cap: u64,
+}
+
+fn irinstlist_new() IRInstList {
+    return IRInstList{
+        .items = @alloc([]*IRInst, 64),
+        .len = 0,
+        .cap = 64,
+    }
+}
+
+fn irinstlist_push(list: *IRInstList, inst: *IRInst) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRInst, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = inst
+    list.len = list.len + 1
+}
+
+// ============================================================================
+// IR Function
+// ============================================================================
+
+struct IRLocal {
+    name: string,
+    type: *IRTypeInfo,
+    index: u64,
+}
+
+struct IRLocalList {
+    items: []*IRLocal,
+    len: u64,
+    cap: u64,
+}
+
+fn irlocallist_new() IRLocalList {
+    return IRLocalList{
+        .items = @alloc([]*IRLocal, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irlocallist_push(list: *IRLocalList, local: *IRLocal) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRLocal, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = local
+    list.len = list.len + 1
+}
+
+struct IRParam {
+    name: string,
+    type: *IRTypeInfo,
+}
+
+struct IRParamList {
+    items: []*IRParam,
+    len: u64,
+    cap: u64,
+}
+
+fn irparamlist_new() IRParamList {
+    return IRParamList{
+        .items = @alloc([]*IRParam, 8),
+        .len = 0,
+        .cap = 8,
+    }
+}
+
+fn irparamlist_push(list: *IRParamList, param: *IRParam) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRParam, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = param
+    list.len = list.len + 1
+}
+
+struct IRFunction {
+    name: string,
+    params: *IRParamList,
+    return_type: *IRTypeInfo,
+    locals: *IRLocalList,
+    instructions: *IRInstList,
+    label_count: u64,
+}
+
+fn irfunction_new(name: string) *IRFunction {
+    const fn_ptr = @alloc(IRFunction, 1)
+    fn_ptr.name = name
+
+    const params = @alloc(IRParamList, 1)
+    params.* = irparamlist_new()
+    fn_ptr.params = params
+
+    fn_ptr.return_type = null
+
+    const locals = @alloc(IRLocalList, 1)
+    locals.* = irlocallist_new()
+    fn_ptr.locals = locals
+
+    const insts = @alloc(IRInstList, 1)
+    insts.* = irinstlist_new()
+    fn_ptr.instructions = insts
+
+    fn_ptr.label_count = 0
+
+    return fn_ptr
+}
+
+fn irfunction_new_label(func: *IRFunction) u64 {
+    const label = func.label_count
+    func.label_count = func.label_count + 1
+    return label
+}
+
+fn irfunction_add_local(func: *IRFunction, name: string, type: *IRTypeInfo) u64 {
+    const index = func.locals.len
+    const local = @alloc(IRLocal, 1)
+    local.name = name
+    local.type = type
+    local.index = index
+    irlocallist_push(func.locals, local)
+    return index
+}
+
+fn irfunction_emit(func: *IRFunction, inst: *IRInst) void {
+    irinstlist_push(func.instructions, inst)
+}
+
+// ============================================================================
+// IR Module
+// ============================================================================
+
+struct IRFunctionList {
+    items: []*IRFunction,
+    len: u64,
+    cap: u64,
+}
+
+fn irfunctionlist_new() IRFunctionList {
+    return IRFunctionList{
+        .items = @alloc([]*IRFunction, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irfunctionlist_push(list: *IRFunctionList, func: *IRFunction) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRFunction, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = func
+    list.len = list.len + 1
+}
+
+struct IRStructType {
+    name: string,
+    type_info: *IRTypeInfo,
+}
+
+struct IRStructTypeList {
+    items: []*IRStructType,
+    len: u64,
+    cap: u64,
+}
+
+fn irstructtypelist_new() IRStructTypeList {
+    return IRStructTypeList{
+        .items = @alloc([]*IRStructType, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irstructtypelist_push(list: *IRStructTypeList, st: *IRStructType) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRStructType, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = st
+    list.len = list.len + 1
+}
+
+struct IREnumType {
+    name: string,
+    variants: *StringList,
+}
+
+struct IREnumTypeList {
+    items: []*IREnumType,
+    len: u64,
+    cap: u64,
+}
+
+fn irenumtypelist_new() IREnumTypeList {
+    return IREnumTypeList{
+        .items = @alloc([]*IREnumType, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irenumtypelist_push(list: *IREnumTypeList, et: *IREnumType) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IREnumType, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = et
+    list.len = list.len + 1
+}
+
+struct IRGlobal {
+    name: string,
+    type: *IRTypeInfo,
+    index: u64,
+    is_const: bool,
+}
+
+struct IRGlobalList {
+    items: []*IRGlobal,
+    len: u64,
+    cap: u64,
+}
+
+fn irgloballist_new() IRGlobalList {
+    return IRGlobalList{
+        .items = @alloc([]*IRGlobal, 16),
+        .len = 0,
+        .cap = 16,
+    }
+}
+
+fn irgloballist_push(list: *IRGlobalList, global: *IRGlobal) void {
+    if (list.len >= list.cap) {
+        const new_cap = list.cap * 2
+        const new_items = @alloc([]*IRGlobal, new_cap)
+        for (i in 0..list.len) {
+            new_items[i] = list.items[i]
+        }
+        list.items = new_items
+        list.cap = new_cap
+    }
+    list.items[list.len] = global
+    list.len = list.len + 1
+}
+
+struct IRModule {
+    functions: *IRFunctionList,
+    structs: *IRStructTypeList,
+    enums: *IREnumTypeList,
+    globals: *IRGlobalList,
+    string_constants: *StringList,
+}
+
+fn irmodule_new() *IRModule {
+    const mod = @alloc(IRModule, 1)
+
+    const funcs = @alloc(IRFunctionList, 1)
+    funcs.* = irfunctionlist_new()
+    mod.functions = funcs
+
+    const structs = @alloc(IRStructTypeList, 1)
+    structs.* = irstructtypelist_new()
+    mod.structs = structs
+
+    const enums = @alloc(IREnumTypeList, 1)
+    enums.* = irenumtypelist_new()
+    mod.enums = enums
+
+    const globals = @alloc(IRGlobalList, 1)
+    globals.* = irgloballist_new()
+    mod.globals = globals
+
+    const strings = @alloc(StringList, 1)
+    strings.* = stringlist_new()
+    mod.string_constants = strings
+
+    return mod
+}
+
+fn irmodule_add_string(mod: *IRModule, s: string) u64 {
+    // Check if string already exists
+    for (i in 0..mod.string_constants.len) {
+        if (mod.string_constants.items[i] == s) {
+            return i
+        }
+    }
+    const index = mod.string_constants.len
+    stringlist_push(mod.string_constants, s)
+    return index
+}
+
+fn irmodule_find_function(mod: *IRModule, name: string) *IRFunction {
+    for (i in 0..mod.functions.len) {
+        if (mod.functions.items[i].name == name) {
+            return mod.functions.items[i]
+        }
+    }
+    return null
+}
+
+fn irmodule_find_struct(mod: *IRModule, name: string) *IRStructType {
+    for (i in 0..mod.structs.len) {
+        if (mod.structs.items[i].name == name) {
+            return mod.structs.items[i]
+        }
+    }
+    return null
+}
+
+fn irmodule_find_enum(mod: *IRModule, name: string) *IREnumType {
+    for (i in 0..mod.enums.len) {
+        if (mod.enums.items[i].name == name) {
+            return mod.enums.items[i]
+        }
+    }
+    return null
+}
+
+// ============================================================================
+// IR Instruction Constructors
+// ============================================================================
+
+fn make_inst(op: IROp) *IRInst {
+    const inst = @alloc(IRInst, 1)
+    inst.op = op
+    inst.operand_i64 = 0
+    inst.operand_u64 = 0
+    inst.operand_str = ""
+    inst.operand_bool = false
+    inst.target_label = 0
+    inst.result_type = null
+    return inst
+}
+
+fn make_inst_i64(op: IROp, value: i64) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_i64 = value
+    return inst
+}
+
+fn make_inst_u64(op: IROp, value: u64) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_u64 = value
+    return inst
+}
+
+fn make_inst_str(op: IROp, value: string) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_str = value
+    return inst
+}
+
+fn make_inst_bool(op: IROp, value: bool) *IRInst {
+    const inst = make_inst(op)
+    inst.operand_bool = value
+    return inst
+}
+
+fn make_inst_label(op: IROp, label: u64) *IRInst {
+    const inst = make_inst(op)
+    inst.target_label = label
+    return inst
+}
+
+// ============================================================================
+// IR Type Constructors
+// ============================================================================
+
+fn make_ir_type(tag: IRType) *IRTypeInfo {
+    const t = @alloc(IRTypeInfo, 1)
+    t.tag = tag
+    t.name = ""
+    t.inner = null
+    t.array_size = 0
+    t.fields = null
+    t.variants = null
+    return t
+}
+
+fn make_ir_type_named(tag: IRType, name: string) *IRTypeInfo {
+    const t = make_ir_type(tag)
+    t.name = name
+    return t
+}
+
+fn make_ir_type_pointer(inner: *IRTypeInfo) *IRTypeInfo {
+    const t = make_ir_type(IRType.Pointer)
+    t.inner = inner
+    return t
+}
+
+fn make_ir_type_array(inner: *IRTypeInfo, size: u64) *IRTypeInfo {
+    const t = make_ir_type(IRType.Array)
+    t.inner = inner
+    t.array_size = size
+    return t
+}
+
+fn make_ir_type_slice(inner: *IRTypeInfo) *IRTypeInfo {
+    const t = make_ir_type(IRType.Slice)
+    t.inner = inner
+    return t
+}
+
+// Built-in type constants
+fn ir_type_void() *IRTypeInfo { return make_ir_type(IRType.Void) }
+fn ir_type_bool() *IRTypeInfo { return make_ir_type(IRType.Bool) }
+fn ir_type_i64() *IRTypeInfo { return make_ir_type(IRType.I64) }
+fn ir_type_u64() *IRTypeInfo { return make_ir_type(IRType.U64) }
+fn ir_type_u8() *IRTypeInfo { return make_ir_type(IRType.U8) }
+fn ir_type_u16() *IRTypeInfo { return make_ir_type(IRType.U16) }
+fn ir_type_u32() *IRTypeInfo { return make_ir_type(IRType.U32) }
+fn ir_type_string() *IRTypeInfo { return make_ir_type(IRType.String) }
